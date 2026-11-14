@@ -17,6 +17,8 @@ export interface Photo {
   camera: string | null;
   dedupeKey: string;
   favorite: boolean;
+  /** Set when a print of this photo has been matched while sorting. */
+  printed?: boolean;
   addedAt: number;
 }
 

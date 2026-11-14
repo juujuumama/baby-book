@@ -163,3 +163,58 @@ describe('print sorting in rougher conditions', () => {
     }
   }, 30000);
 });
+
+describe('a big batch', () => {
+  it('sorts 40 prints in one photo, some touching or overlapping', () => {
+    const library = new Map<string, Sig>();
+    const photos: Raster[] = [];
+    for (let i = 0; i < 90; i++) {
+      const p = i % 5 === 0 ? fakePhoto(2000 + i, 240, 320) : fakePhoto(2000 + i, 320, 240);
+      photos.push(p);
+      library.set(`p${i}`, makeSig(p));
+    }
+    const W = 2000, H = 1500;
+    const scene = table(W, H, 21);
+    const r = rng(77);
+    const truth: { id: string; c: Pt; contact: boolean }[] = [];
+    // 8 columns x 5 rows; a few neighbours pushed together to touch or overlap.
+    const touchPairs = new Map([[2, 0], [11, 0], [20, 0], [29, 0], [33, 0.12], [14, 0.1]]); // index -> overlap fraction
+    for (let n = 0; n < 40; n++) {
+      const col = n % 8, row = Math.floor(n / 8);
+      const idx = (n * 7 + 3) % 90;
+      const print = toPrint(photos[idx], 900 + n);
+      const land = print.w >= print.h;
+      const [pw, ph] = land ? [210, 140] : [140, 210];
+      let cx = 130 + col * 248 + (r() - 0.5) * 20, cy = 160 + row * 290 + (r() - 0.5) * 20;
+      let angle = (r() - 0.5) * 0.2;
+      let contact = false;
+      const prev = truth[n - 1];
+      if (touchPairs.has(n - 1) && col > 0 && prev) {
+        // Butt this print up against the previous one (same row), level with it.
+        const ov = touchPairs.get(n - 1)!;
+        const prevW = truth[n - 1] ? (photos[(((n - 1) * 7 + 3) % 90)].w >= photos[(((n - 1) * 7 + 3) % 90)].h ? 210 : 140) : 210;
+        cx = prev.c.x + prevW / 2 + pw / 2 - ov * pw;
+        cy = prev.c.y + (ph - (land ? 140 : 210)) / 2;
+        angle = 0;
+        contact = true;
+        prev.contact = true;
+      }
+      paste(scene, print, rotatedRect(cx, cy, pw, ph, angle));
+      truth.push({ id: `p${idx}`, c: { x: cx, y: cy }, contact });
+    }
+    const found = analyzeTable(scene, library);
+    let correct = 0, wrongConfident = 0;
+    const misses: string[] = [];
+    for (const t of truth) {
+      const f = found.find((p) => Math.hypot(p.quad.reduce((s, q) => s + q.x, 0) / 4 - t.c.x, p.quad.reduce((s, q) => s + q.y, 0) / 4 - t.c.y) < 50);
+      const v = f ? verdict(f.candidates, () => false) : 'none';
+      if (f && v === 'match' && f.candidates[0].id === t.id) correct++;
+      else {
+        misses.push(`${t.id}${t.contact ? '(touching)' : ''}:${f ? `${f.candidates[0].id}/${f.candidates[0].score.toFixed(2)}/${v}` : 'not found'}`);
+        if (f && v === 'match') wrongConfident++;
+      }
+    }
+    expect(wrongConfident, misses.join(' ')).toBe(0);
+    expect(correct, misses.join(' ')).toBeGreaterThanOrEqual(36);
+  }, 60000);
+});

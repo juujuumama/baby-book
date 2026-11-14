@@ -3,11 +3,12 @@ import { ImportSheet } from './components/ImportButton';
 import { NeedsDate } from './components/NeedsDate';
 import { Onboarding } from './components/Onboarding';
 import { SettingsView } from './components/Settings';
+import { SortPrints } from './components/SortPrints';
 import { Timeline } from './components/Timeline';
 import { loadAll, useStore } from './store';
 
-type Tab = 'timeline' | 'undated' | 'settings';
-const TABS: Tab[] = ['timeline', 'undated', 'settings'];
+type Tab = 'timeline' | 'sort' | 'undated' | 'settings';
+const TABS: Tab[] = ['timeline', 'sort', 'undated', 'settings'];
 
 function tabFromHash(): Tab {
   const h = location.hash.replace('#/', '') as Tab;
@@ -44,12 +45,16 @@ export function App() {
       </header>
       <main>
         {tab === 'timeline' && <Timeline onGoUndated={() => setTab('undated')} />}
+        {tab === 'sort' && <SortPrints />}
         {tab === 'undated' && <NeedsDate />}
         {tab === 'settings' && <SettingsView />}
       </main>
       <nav class="tabbar" aria-label="Sections">
         <button class={tab === 'timeline' ? 'on' : ''} aria-current={tab === 'timeline'} onClick={() => setTab('timeline')}>
           <span class="tab-icon" aria-hidden="true">📖</span>Months
+        </button>
+        <button class={tab === 'sort' ? 'on' : ''} aria-current={tab === 'sort'} onClick={() => setTab('sort')}>
+          <span class="tab-icon" aria-hidden="true">🗂️</span>Sort prints
         </button>
         <button class={tab === 'undated' ? 'on' : ''} aria-current={tab === 'undated'} onClick={() => setTab('undated')}>
           <span class="tab-icon" aria-hidden="true">📮</span>Needs a date{undatedCount > 0 && <span class="count">{undatedCount}</span>}

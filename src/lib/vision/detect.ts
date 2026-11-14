@@ -80,8 +80,15 @@ function backgroundPalette(r: Raster, k = 4): [number, number, number][] {
       centers.forEach((c, i) => { const d = (s[0] - c[0]) ** 2 + (s[1] - c[1]) ** 2 + (s[2] - c[2]) ** 2; if (d < bd) { bd = d; best = i; } });
       const t = sums[best]; t[0] += s[0]; t[1] += s[1]; t[2] += s[2]; t[3]++;
     }
-    centers = sums.filter((t) => t[3] > samples.length * 0.03).map((t) => [t[0] / t[3], t[1] / t[3], t[2] / t[3]]);
+    const kept = sums.filter((t) => t[3] > samples.length * 0.03);
+    centers = kept.map((t) => [t[0] / t[3], t[1] / t[3], t[2] / t[3]]);
     if (!centers.length) centers = [samples[0]];
+    if (it === 7) {
+      // Prints that reach the edge of the shot show up on the border too; keep
+      // only colours that cover a good share of it (the table itself).
+      const big = kept.map((t, i) => [t[3], i] as const).filter(([n]) => n > samples.length * 0.15).map(([, i]) => centers[i]);
+      if (big.length) centers = big;
+    }
   }
   return centers;
 }
@@ -153,7 +160,7 @@ function fillHoles(mask: Uint8Array, w: number, h: number): Uint8Array {
   return out;
 }
 
-interface Blob { area: number; pts: Pt[]; touchesEdge: boolean }
+interface Blob { area: number; pts: Pt[]; touchesEdge: boolean; pixels: Int32Array }
 
 function components(mask: Uint8Array, w: number, h: number, minArea: number): Blob[] {
   const label = new Int32Array(w * h);
@@ -166,12 +173,14 @@ function components(mask: Uint8Array, w: number, h: number, minArea: number): Bl
     label[start] = id;
     stack.push(start);
     let area = 0, edge = false;
+    const pix: number[] = [];
     const minX = new Int32Array(h).fill(w), maxX = new Int32Array(h).fill(-1);
     let y0 = h, y1 = -1;
     while (stack.length) {
       const i = stack.pop()!;
       const x = i % w, y = (i - x) / w;
       area++;
+      pix.push(i);
       if (x < minX[y]) minX[y] = x;
       if (x > maxX[y]) maxX[y] = x;
       if (y < y0) y0 = y;
@@ -188,7 +197,7 @@ function components(mask: Uint8Array, w: number, h: number, minArea: number): Bl
       if (maxX[y] < 0) continue;
       pts.push({ x: minX[y], y }, { x: maxX[y] + 1, y }, { x: minX[y], y: y + 1 }, { x: maxX[y] + 1, y: y + 1 });
     }
-    blobs.push({ area, pts, touchesEdge: edge });
+    blobs.push({ area, pts, touchesEdge: edge, pixels: Int32Array.from(pix) });
   }
   return blobs;
 }
@@ -231,6 +240,31 @@ export function maxAreaQuad(hull: Pt[]): Quad | null {
     }
   }
   return res.map((i) => P(i)) as Quad;
+}
+
+/** Smallest rectangle (any rotation) enclosing a convex polygon: rotating calipers. */
+export function minAreaRect(hull: Pt[]): Quad | null {
+  const n = hull.length;
+  if (n < 3) return null;
+  let best = Infinity, res: Quad | null = null;
+  for (let i = 0; i < n; i++) {
+    const a = hull[i], b = hull[(i + 1) % n];
+    const L = Math.hypot(b.x - a.x, b.y - a.y);
+    if (L < 1e-9) continue;
+    const ux = (b.x - a.x) / L, uy = (b.y - a.y) / L;
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const p of hull) {
+      const u = (p.x - a.x) * ux + (p.y - a.y) * uy, v = -(p.x - a.x) * uy + (p.y - a.y) * ux;
+      if (u < minU) minU = u; if (u > maxU) maxU = u; if (v < minV) minV = v; if (v > maxV) maxV = v;
+    }
+    const area = (maxU - minU) * (maxV - minV);
+    if (area < best) {
+      best = area;
+      const P = (u: number, v: number): Pt => ({ x: a.x + u * ux - v * uy, y: a.y + u * uy + v * ux });
+      res = [P(minU, minV), P(maxU, minV), P(maxU, maxV), P(minU, maxV)];
+    }
+  }
+  return res;
 }
 
 /** Orient a quad clockwise on screen, starting from the corner nearest the top-left. */
@@ -291,7 +325,7 @@ function refineQuad(q: Quad, w: number, h: number, grad: { gx: Float32Array; gy:
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     if ((mid.x - c.x) * n.x + (mid.y - c.y) * n.y < 0) n = { x: -n.x, y: -n.y };
     const perp = (len(q[(e + 1) % 4], q[(e + 2) % 4]) + len(q[(e + 3) % 4], q[e])) / 2;
-    const out = Math.max(3, perp * 0.4), inn = Math.max(2, perp * 0.04);
+    const out = Math.max(3, perp * 0.06), inn = Math.max(3, perp * 0.1);
     const step = Math.max(1, Math.round(out / 40));
     const SAMPLES = 32;
     let best = -1, bestA = 0, bestB = 0;
@@ -315,41 +349,13 @@ function refineQuad(q: Quad, w: number, h: number, grad: { gx: Float32Array; gy:
       // A print's border has table outside and print inside; wood grain has table on both sides.
       return (gsum / n2) * (0.1 + Math.max(0, (outside - inside) / n2));
     };
-    // Fraction of a line (at end offsets oa, ob) that looks like table.
-    const bgFrac = (oa: number, ob: number) => {
-      let c = 0, n2 = 0;
-      for (let k = 0; k < 16; k++) {
-        const t = 0.1 + 0.8 * (k + 0.5) / 16, o = oa + (ob - oa) * t;
-        const xi = Math.round(a.x + (b.x - a.x) * t + n.x * o), yi = Math.round(a.y + (b.y - a.y) * t + n.y * o);
-        if (xi < 0 || yi < 0 || xi >= w || yi >= h) continue;
-        n2++;
-        if (bg(xi, yi)) c++;
-      }
-      return n2 ? c / n2 : 1;
-    };
-    // Growing outward must not cross a strip of plain table: that's a gap between prints.
-    const crossesGap = (oa: number, ob: number) => {
-      const reach = Math.max(oa, ob);
-      for (let o = 3; o < reach - 2; o += 2) {
-        const f = o / reach;
-        if (bgFrac(Math.max(0, oa) * f, Math.max(0, ob) * f) > 0.8) return true;
-      }
-      return false;
-    };
-    // Take the nearest strong border, not the strongest: going too far out
-    // would grab the far edge of a neighbouring print.
-    const cands: [number, number, number][] = [];
+    const base = score(0, 0);
     for (let oa = -inn; oa <= out; oa += step) for (let ob = -inn; ob <= out; ob += step) {
-      const s = score(oa, ob);
-      cands.push([s, oa, ob]);
-      if (s > best) best = s;
+      const sc = score(oa, ob);
+      if (sc > best) { best = sc; bestA = oa; bestB = ob; }
     }
-    let nearest = Infinity;
-    cands.sort((x, y) => (Math.max(0, x[1]) + Math.max(0, x[2])) - (Math.max(0, y[1]) + Math.max(0, y[2])));
-    for (const [s, oa, ob] of cands) {
-      const travel = Math.max(0, oa) + Math.max(0, ob);
-      if (s >= best * 0.6 && travel < nearest && !crossesGap(oa, ob)) { nearest = travel; bestA = oa; bestB = ob; }
-    }
+    // Only move when the new line is clearly a better border.
+    if (best < base * 1.15) { bestA = 0; bestB = 0; best = base; }
     best = score(bestA, bestB);
     // Polish at single-pixel steps.
     for (let oa = bestA - step; oa <= bestA + step; oa += 0.5) for (let ob = bestB - step; ob <= bestB + step; ob += 0.5) {
@@ -368,7 +374,112 @@ function refineQuad(q: Quad, w: number, h: number, grad: { gx: Float32Array; gy:
   }
   // Sanity: refinement should only grow or slightly shrink the quad.
   const a0 = polygonArea(q), a1 = polygonArea(pts);
-  return a1 > a0 * 0.85 && a1 < a0 * 3 ? (pts as Quad) : q;
+  return a1 > a0 * 0.7 && a1 < a0 * 1.3 ? (pts as Quad) : q;
+}
+
+interface Fit { rough: Quad; hull: Pt[]; fill: number; hullFill: number; good: boolean }
+
+function fitBlob(b: Blob): Fit | null {
+  const hull = convexHull(b.pts);
+  // The enclosing rectangle shrugs off bites out of a print's edges and corners.
+  const quad = minAreaRect(hull);
+  if (!quad) return null;
+  const rough = normalizeQuad(quad);
+  const ra = polygonArea(rough);
+  const fill = Math.min(b.area / ra, ra / b.area);
+  const hullFill = polygonArea(hull) / ra;
+  const e = [0, 1, 2, 3].map((i) => Math.hypot(rough[i].x - rough[(i + 1) % 4].x, rough[i].y - rough[(i + 1) % 4].y));
+  const aspect = Math.max(e[0] + e[2], e[1] + e[3]) / Math.max(1e-6, Math.min(e[0] + e[2], e[1] + e[3]));
+  const good = fill >= 0.82 && hullFill >= 0.9 && aspect < 2.1;
+  return { rough, hull, fill, hullFill, good };
+}
+
+/**
+ * Prints that touch or overlap merge into one blob. Since a batch is usually
+ * all one print size (learned from the prints lying on their own), fill the
+ * blob greedily with print-sized rectangles: each must sit inside the blob,
+ * cover new ground, and line up with the blob's outer edges.
+ */
+function packCluster(b: Blob, w: number, h: number, L: number, S: number, typical: number): Quad[] {
+  let x0 = w, y0 = h, x1 = 0, y1 = 0;
+  for (const i of b.pixels) { const x = i % w, y = (i - x) / w; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+  const m = new Uint8Array(bw * bh);
+  for (const i of b.pixels) { const x = i % w, y = (i - x) / w; m[(y - y0) * bw + (x - x0)] = 1; }
+  const covered = new Uint8Array(bw * bh);
+  const at = (x: number, y: number) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < bw && yi < bh ? m[yi * bw + xi] : 0; };
+  const cov = (x: number, y: number) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < bw && yi < bh ? covered[yi * bw + xi] : 1; };
+
+  // Candidate angles: the cluster's own rectangle plus its long straight sides.
+  const hull = convexHull(b.pts.map((p) => ({ x: p.x - x0, y: p.y - y0 })));
+  const angles: number[] = [];
+  const addAngle = (a: number) => {
+    a = ((a % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2);
+    if (!angles.some((t) => Math.min(Math.abs(t - a), Math.PI / 2 - Math.abs(t - a)) < 0.035)) angles.push(a);
+  };
+  const r0 = minAreaRect(hull);
+  if (r0) addAngle(Math.atan2(r0[1].y - r0[0].y, r0[1].x - r0[0].x));
+  const edges = hull.map((p, i) => { const q = hull[(i + 1) % hull.length]; return { a: Math.atan2(q.y - p.y, q.x - p.x), len: Math.hypot(q.x - p.x, q.y - p.y) }; })
+    .filter((e) => e.len > S * 0.5).sort((a, b2) => b2.len - a.len);
+  for (const e of edges) { if (angles.length >= 4) break; addAngle(e.a); }
+
+  const quads: Quad[] = [];
+  const IN = 10, JN = 7, PER = 28;
+  type Place = { cx: number; cy: number; a: number; lw: number; lh: number; score: number };
+  const evaluate = (cx: number, cy: number, a: number, lw: number, lh: number): Place | null => {
+    const ux = Math.cos(a), uy = Math.sin(a), vx = -uy, vy = ux;
+    const P = (u: number, v: number) => [cx + ux * u + vx * v, cy + uy * u + vy * v] as const;
+    // Quick reject on the corners.
+    for (const [su, sv] of [[-0.42, -0.42], [0.42, -0.42], [0.42, 0.42], [-0.42, 0.42]]) { const [x, y] = P(su * lw, sv * lh); if (!at(x, y)) return null; }
+    let inside = 0, fresh = 0;
+    for (let j = 0; j < JN; j++) for (let i = 0; i < IN; i++) {
+      const [x, y] = P(((i + 0.5) / IN - 0.5) * lw * 0.94, ((j + 0.5) / JN - 0.5) * lh * 0.94);
+      if (at(x, y)) { inside++; if (!cov(x, y)) fresh++; }
+    }
+    const n = IN * JN;
+    if (inside < n * 0.94 || fresh < n * 0.5) return null;
+    let outside = 0;
+    for (let k = 0; k < PER; k++) {
+      const t = (k + 0.5) / PER * 4, side = Math.floor(t), f = t - side - 0.5;
+      const [u, v] = side === 0 ? [f * lw, -lh / 2 - 3] : side === 1 ? [lw / 2 + 3, f * lh] : side === 2 ? [-f * lw, lh / 2 + 3] : [-lw / 2 - 3, -f * lh];
+      const [x, y] = P(u, v);
+      if (!at(x, y)) outside++;
+    }
+    return { cx, cy, a, lw, lh, score: outside / PER + 0.3 * fresh / n };
+  };
+
+  for (let iter = 0; iter < 12; iter++) {
+    let remaining = 0;
+    for (let i = 0; i < m.length; i++) if (m[i] && !covered[i]) remaining++;
+    if (remaining < typical * 0.35) break;
+    let best: Place | null = null;
+    const step = Math.max(2, Math.round(S / 25));
+    for (const a of angles) for (const [lw, lh] of [[L, S], [S, L]]) {
+      for (let cy = 0; cy < bh; cy += step) for (let cx = 0; cx < bw; cx += step) {
+        if (!m[cy * bw + cx]) continue;
+        const pl = evaluate(cx, cy, a, lw, lh);
+        if (pl && (!best || pl.score > best.score)) best = pl;
+      }
+    }
+    if (!best) break;
+    // Polish: small shifts, turns and size changes.
+    for (let pass = 0; pass < 2; pass++) {
+      const b0: Place = best;
+      for (const dx of [-2, -1, 0, 1, 2]) for (const dy of [-2, -1, 0, 1, 2]) for (const da of [-0.02, 0, 0.02]) for (const sc of [0.97, 1, 1.03]) {
+        const pl = evaluate(b0.cx + dx, b0.cy + dy, b0.a + da, b0.lw * sc, b0.lh * sc);
+        if (pl && pl.score > best.score + 1e-6) best = pl;
+      }
+    }
+    const { cx, cy, a, lw, lh } = best;
+    const ux = Math.cos(a), uy = Math.sin(a);
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+      const dx = x - cx, dy = y - cy;
+      if (Math.abs(dx * ux + dy * uy) <= lw / 2 && Math.abs(-dx * uy + dy * ux) <= lh / 2) covered[y * bw + x] = 1;
+    }
+    const corner = (u: number, v: number): Pt => ({ x: x0 + cx + ux * u - uy * v, y: y0 + cy + uy * u + ux * v });
+    quads.push(normalizeQuad([corner(-lw / 2, -lh / 2), corner(lw / 2, -lh / 2), corner(lw / 2, lh / 2), corner(-lw / 2, lh / 2)]));
+  }
+  return quads;
 }
 
 export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection[] {
@@ -396,33 +507,72 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
     if (x < band || x >= w - band || y < band || y >= h - band) border.push(dist[y * w + x]);
   }
   border.sort((a, b) => a - b);
-  const noise = border[Math.floor(border.length * 0.98)] ?? 0;
-  const t = Math.max(14, Math.min(noise * 1.4 + 4, otsu(dist, maxD)));
+  // Use a middle percentile: prints reaching the edge of the shot shouldn't
+  // count as table texture.
+  const noise = border[Math.floor(border.length * 0.8)] ?? 0;
+  const t = Math.max(14, Math.min(noise * 2 + 6, otsu(dist, maxD)));
   let mask: Uint8Array = new Uint8Array(w * h);
   for (let i = 0; i < mask.length; i++) mask[i] = dist[i] > t ? 1 : 0;
 
+  // Sharp edges: a print's outline is a crisp edge even where its colours
+  // match the table, while wood grain or carpet is soft. Edges sharper than
+  // anything on the table's border join the mask, so filling holes then
+  // fills each print's closed outline.
+  const grad = sobel(img);
+  const mag = new Float32Array(w * h);
+  for (let i = 0; i < mag.length; i++) mag[i] = Math.hypot(grad.gx[i], grad.gy[i]);
+  const bmag: number[] = [];
+  for (let y = 1; y < h - 1; y += 2) for (let x = 1; x < w - 1; x += 2) {
+    if (x < band || x >= w - band || y < band || y >= h - band) bmag.push(mag[y * w + x]);
+  }
+  bmag.sort((a, b) => a - b);
+  const gT = Math.max(60, (bmag[Math.floor(bmag.length * 0.8)] ?? 0) * 3);
+  let edges: Uint8Array = new Uint8Array(w * h);
+  for (let i = 0; i < edges.length; i++) edges[i] = mag[i] > gT ? 1 : 0;
+
   const unit = Math.max(1, Math.round(Math.max(w, h) / 500));
+  edges = morph(edges, w, h, unit, true);
+  for (let i = 0; i < mask.length; i++) mask[i] |= edges[i];
   mask = morph(morph(mask, w, h, unit, true), w, h, unit, false); // close small gaps
   mask = fillHoles(mask, w, h);
   mask = morph(morph(mask, w, h, unit * 3, false), w, h, unit * 3, true); // open: cut thin bridges
 
   const minArea = (opts.minArea ?? 0.004) * w * h;
-  const grad = sobel(img);
   const bgT = t * 0.75;
   const isBg = (x: number, y: number) => dist[y * w + x] < bgT;
   const out: Detection[] = [];
-  for (const b of components(mask, w, h, minArea)) {
-    const hull = convexHull(b.pts);
-    const quad = maxAreaQuad(hull);
-    if (!quad) continue;
-    const rough = normalizeQuad(quad);
-    const ra = polygonArea(rough);
-    const fill = Math.min(b.area / ra, ra / b.area);
-    const hullFill = ra / polygonArea(hull);
-    const q = normalizeQuad(refineQuad(rough, w, h, grad, isBg));
+  const blobs = components(mask, w, h, minArea);
+  const fits = blobs.map(fitBlob);
+  // Typical print size, from the blobs that are clearly single prints.
+  const goodAreas = blobs.filter((_, i) => fits[i]?.good && !blobs[i].touchesEdge).map((b) => b.area).sort((a, b) => a - b);
+  const typical = goodAreas.length ? goodAreas[Math.floor(goodAreas.length / 2)] : 0;
+  // Typical print shape, for unpacking clusters of touching prints.
+  const sides: number[][] = [];
+  blobs.forEach((b, i) => {
+    const f = fits[i];
+    if (!f?.good || b.touchesEdge) return;
+    const q = f.rough, e0 = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y), e1 = Math.hypot(q[2].x - q[1].x, q[2].y - q[1].y);
+    sides.push([Math.max(e0, e1), Math.min(e0, e1)]);
+  });
+  const med = (v: number[]) => [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)];
+  const L = sides.length ? med(sides.map((s2) => s2[0])) : 0, S = sides.length ? med(sides.map((s2) => s2[1])) : 0;
+
+  blobs.forEach((b, i) => {
+    const f = fits[i];
+    if (!f) return;
+    const big = typical > 0 && b.area > typical * 1.4;
+    if (!f.good && !b.touchesEdge && big && L > 0) {
+      const quads = packCluster(b, w, h, L, S, typical);
+      if (quads.length >= 2) {
+        // Cluster pieces keep their packed outline: snapping would reach into the neighbour.
+        for (const q of quads) out.push({ quad: q, fill: 1, area: polygonArea(q), doubtful: false, touchesEdge: false });
+        return;
+      }
+    }
+    const q = normalizeQuad(refineQuad(f.rough, w, h, grad, isBg));
     const qa = polygonArea(q);
-    const doubtful = fill < 0.86 || hullFill < 0.9 || !cornerAnglesOk(q) || b.touchesEdge;
-    out.push({ quad: q, fill, area: qa, doubtful, touchesEdge: b.touchesEdge });
-  }
+    const doubtful = !f.good || !cornerAnglesOk(q) || b.touchesEdge || (typical > 0 && (qa > typical * 1.8 || qa < typical * 0.4));
+    out.push({ quad: q, fill: f.fill, area: qa, doubtful, touchesEdge: b.touchesEdge });
+  });
   return out.sort((a, b) => (a.quad[0].y + a.quad[2].y) - (b.quad[0].y + b.quad[2].y) || a.quad[0].x - b.quad[0].x);
 }

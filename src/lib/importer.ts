@@ -1,4 +1,5 @@
-import { hasDedupeKey, newId, savePhoto } from './db';
+import { hasDedupeKey, newId, putSig, savePhoto } from './db';
+import { sigFromSource } from './vision/browser';
 import { dateFromName, readMeta } from './exif';
 import { closeDrawable, decodeImage, FULL_MAX_EDGE, imageSize, resizeToJpeg, THUMB_MAX_EDGE } from './image';
 import { localStringFromDate } from './dates';
@@ -82,6 +83,9 @@ async function importOne(file: File): Promise<boolean> {
       addedAt: Date.now(),
     };
     await savePhoto(photo, full.blob, thumb.blob);
+    try {
+      await putSig(photo.id, sigFromSource(src as CanvasImageSource & { width: number; height: number }));
+    } catch { /* rebuilt later from the thumbnail */ }
     return true;
   } finally {
     closeDrawable(src);

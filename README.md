@@ -12,7 +12,7 @@ servers, or paid services. It's a static web app you can host for free.
 | Step | Feature | State |
 | --- | --- | --- |
 | 1 | Import, on-device storage, timeline by month of age | ✅ done |
-| 2 | Print-matching sort (table photo + one-at-a-time) | planned |
+| 2 | Print-matching sort (table photo + one-at-a-time) | ✅ done |
 | 3 | Cut-sheet export (12×12 sheets of a month's photos) | planned |
 | 4 | Collage pages with soft cutouts and stickers | planned |
 
@@ -30,6 +30,13 @@ servers, or paid services. It's a static web app you can host for free.
   each month has.
 - **Backup & restore** of the whole book as `.zip` file(s) you can save to iCloud Drive or Files.
   Very large books are split into parts of 1.5 GB or less.
+- **Sort prints** (Sort prints tab):
+  - *A whole batch:* lay up to 30–40 prints on a table or floor and take one photo. Each print is
+    found, straightened, matched to its photo, and numbered in date order on your picture, with its
+    age and date. A list below gives "4 mo · Aug 6 · #4 of 12" for each print. Anything uncertain
+    is marked "?" and you pick from the closest matches.
+  - *One at a time:* hold a print up to the camera to see "5 mo · Jun 12 · #14 of 38".
+  - Matched photos are marked "printed" in the timeline.
 - **Works offline** and installs to the Home Screen (PWA). It also asks the browser for
   persistent storage.
 
@@ -59,6 +66,9 @@ for HEIC, `vite-plugin-pwa` for offline support.
 - `src/lib/db.ts`: IndexedDB storage (photo metadata and image blobs)
 - `src/lib/backup.ts`, `zip.ts`: backup/restore as stored ZIP files
 - `src/lib/timeline.ts`: groups photos into months and days
+- `src/lib/vision/`: print detection (`detect.ts`), perspective straightening (`warp.ts`),
+  fingerprint matching (`match.ts`) and the batch pipeline (`pipeline.ts`). Pure TypeScript with
+  no dependencies, tested on synthetic table photos in `tests/vision.test.ts`.
 - `src/components/`: UI
 
 ## Deploying (free)

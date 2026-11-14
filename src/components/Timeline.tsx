@@ -13,6 +13,7 @@ export function PhotoTile({ photo, onOpen }: { photo: Photo; onOpen: (p: Photo) 
   return (
     <div class={`tile ${photo.favorite ? 'fav' : ''}`}>
       <button class="tile-open" onClick={() => onOpen(photo)} aria-label="Open photo"><Thumb photo={photo} /></button>
+      {photo.printed && <span class="tile-printed" title="You have a print of this">printed</span>}
       <button class={`tile-heart ${photo.favorite ? 'on' : ''}`} aria-pressed={photo.favorite}
         aria-label={photo.favorite ? 'Remove from favorites' : 'Add to favorites'}
         onClick={() => patchPhoto(photo.id, { favorite: !photo.favorite })}>{photo.favorite ? '♥' : '♡'}</button>
@@ -88,6 +89,7 @@ export function Timeline({ onGoUndated }: { onGoUndated: () => void }) {
 
 function MonthSection({ m, onOpen }: { m: MonthGroup; onOpen: (p: Photo) => void }) {
   const count = m.days.reduce((n, d) => n + d.photos.length, 0);
+  const printed = m.photos.filter((p) => p.printed).length;
   const daysWithPhotos = new Set(m.days.map((d) => d.key));
   return (
     <section class={`month tint-${((m.month % 3) + 3) % 3}`} id={`m${m.month}`}>
@@ -97,6 +99,7 @@ function MonthSection({ m, onOpen }: { m: MonthGroup; onOpen: (p: Photo) => void
           {m.start && m.end ? formatRange(m.start, m.end) : 'Bump & before'}
           {' · '}{count} {count === 1 ? 'photo' : 'photos'}
           {m.favorites > 0 && <> · <span class="fav-count">♥ {m.favorites}</span></>}
+          {printed > 0 && <> · {printed} printed</>}
         </p>
         {m.holidays.length > 0 && (
           <div class="holidays">

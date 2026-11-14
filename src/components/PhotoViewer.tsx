@@ -89,6 +89,7 @@ export function PhotoViewer({ photos, startId, birth, onClose }: { photos: Photo
           ) : <div class="viewer-age">Needs a date</div>}
         </div>
         <div class="row">
+          {photo.printed && <button class="btn small light ghost" title="Tap to unmark" onClick={() => patchPhoto(photo.id, { printed: false })}>Printed ✓</button>}
           <button class="btn small light" onClick={() => setEditing(true)}>{d ? 'Change date' : 'Add date'}</button>
           <button class="btn small light ghost" onClick={del}>Remove</button>
         </div>

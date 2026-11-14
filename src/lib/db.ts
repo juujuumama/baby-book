@@ -1,11 +1,14 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { DEFAULT_SETTINGS, type Photo, type Settings } from './types';
+import type { Sig } from './vision/match';
 
 interface BabyBookDB extends DBSchema {
   photos: { key: string; value: Photo; indexes: { dedupeKey: string } };
   /** Image data keyed "<photoId>:full" / "<photoId>:thumb". */
   blobs: { key: string; value: Blob | ArrayBuffer };
   meta: { key: string; value: unknown };
+  /** Matching fingerprints, keyed by photo id. Rebuilt from thumbnails if missing. */
+  sigs: { key: string; value: Sig };
 }
 
 export type BlobKind = 'full' | 'thumb';
@@ -13,12 +16,15 @@ export type BlobKind = 'full' | 'thumb';
 let dbPromise: Promise<IDBPDatabase<BabyBookDB>> | null = null;
 
 export function db() {
-  dbPromise ??= openDB<BabyBookDB>('baby-book', 1, {
-    upgrade(d) {
-      const photos = d.createObjectStore('photos', { keyPath: 'id' });
-      photos.createIndex('dedupeKey', 'dedupeKey', { unique: false });
-      d.createObjectStore('blobs');
-      d.createObjectStore('meta');
+  dbPromise ??= openDB<BabyBookDB>('baby-book', 2, {
+    upgrade(d, oldVersion) {
+      if (oldVersion < 1) {
+        const photos = d.createObjectStore('photos', { keyPath: 'id' });
+        photos.createIndex('dedupeKey', 'dedupeKey', { unique: false });
+        d.createObjectStore('blobs');
+        d.createObjectStore('meta');
+      }
+      if (oldVersion < 2) d.createObjectStore('sigs');
     },
   });
   return dbPromise;
@@ -82,8 +88,9 @@ export async function updatePhoto(id: string, patch: Partial<Photo>): Promise<Ph
 
 export async function deletePhotos(ids: string[]): Promise<void> {
   const d = await db();
-  const tx = d.transaction(['photos', 'blobs'], 'readwrite');
+  const tx = d.transaction(['photos', 'blobs', 'sigs'], 'readwrite');
   for (const id of ids) {
+    tx.objectStore('sigs').delete(id);
     tx.objectStore('photos').delete(id);
     tx.objectStore('blobs').delete(`${id}:full`);
     tx.objectStore('blobs').delete(`${id}:thumb`);
@@ -108,10 +115,23 @@ export async function saveSettings(s: Settings): Promise<void> {
 
 export async function clearEverything(): Promise<void> {
   const d = await db();
-  const tx = d.transaction(['photos', 'blobs', 'meta'], 'readwrite');
-  await Promise.all([tx.objectStore('photos').clear(), tx.objectStore('blobs').clear(), tx.objectStore('meta').clear(), tx.done]);
+  const tx = d.transaction(['photos', 'blobs', 'meta', 'sigs'], 'readwrite');
+  await Promise.all([tx.objectStore('photos').clear(), tx.objectStore('blobs').clear(), tx.objectStore('meta').clear(), tx.objectStore('sigs').clear(), tx.done]);
 }
 
 export function newId(): string {
   return crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export async function getAllSigs(): Promise<Map<string, Sig>> {
+  const d = await db();
+  const tx = d.transaction('sigs');
+  const out = new Map<string, Sig>();
+  let cur = await tx.store.openCursor();
+  while (cur) { out.set(cur.key, cur.value); cur = await cur.continue(); }
+  return out;
+}
+
+export async function putSig(id: string, sig: Sig): Promise<void> {
+  await (await db()).put('sigs', sig, id);
 }
