@@ -232,9 +232,11 @@ export type Verdict = 'match' | 'unsure' | 'none';
  */
 export function verdict(c: Candidate[], sameMoment: (a: string, b: string) => boolean): Verdict {
   const [a, b] = c;
-  if (!a || a.score < 0.45) return 'none';
+  if (!a || a.score < 0.5) return 'none';
   const margin = b ? a.score - b.score : 1;
-  if (a.score >= 0.8 || (a.score >= 0.6 && (margin >= 0.06 || sameMoment(a.id, b.id)))) return 'match';
+  // Measured on real prints against unrelated photos: wrong photos can score up
+  // to ~0.7 with a margin of ~0.1, so a confident match must clear both.
+  if (a.score >= 0.84 || (a.score >= 0.75 && (margin >= 0.12 || (b && sameMoment(a.id, b.id))))) return 'match';
   return 'unsure';
 }
 

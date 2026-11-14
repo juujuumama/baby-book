@@ -369,3 +369,13 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
   .walk-top, .walk-nav { grid-column: 1 / -1; }
   .walk-overview { max-height: none; height: 100%; }
 }
+
+/* ---------- sort: guidance ---------- */
+.steps ol { padding-left: 22px; margin: 10px 0 0; }
+.steps li { margin: 10px 0; }
+.steps li .row { margin-top: 10px; }
+.library-note { font-size: 0.9rem; color: var(--navy-soft); margin-top: 8px; }
+.link-btn { border: 0; background: none; color: var(--navy); font-weight: 800; text-decoration: underline; padding: 0; font-size: inherit; }
+.warn-note { background: #fff1e6; color: #8a4a20; border-radius: 12px; padding: 10px 12px; font-size: 0.9rem; font-weight: 600; }
+.warn-card { background: #fff6ef; border-color: #f0c9ad; }
+.warn-card h3 { color: #8a4a20; margin-bottom: 4px; }

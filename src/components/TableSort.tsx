@@ -202,6 +202,13 @@ export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: 
         </div>
       )}
 
+      {found && found.length >= 4 && sorted.length < found.length * 0.3 && (
+        <div class="card warn-card">
+          <h3>Most prints didn't match</h3>
+          <p>Only {sorted.length} of {found.length} prints matched a photo in your book. Usually this means the camera-roll photos for these months haven't been added yet. Your book has {photos.length} {photos.length === 1 ? 'photo' : 'photos'}.</p>
+          <p class="muted small">Add them from the Months tab, then come back and choose this same picture again.</p>
+        </div>
+      )}
       {found && found.length > 0 && (
         <>
           <button class="btn primary block walk-start" onClick={() => setWalking(true)}>Go through in order ›</button>

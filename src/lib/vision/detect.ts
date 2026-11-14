@@ -377,6 +377,46 @@ function refineQuad(q: Quad, w: number, h: number, grad: { gx: Float32Array; gy:
   return a1 > a0 * 0.7 && a1 < a0 * 1.3 ? (pts as Quad) : q;
 }
 
+/**
+ * Split prints that touch along thin bridges: shrink the mask until they come
+ * apart, label each piece, then grow every piece back over the original mask
+ * (each pixel goes to the nearest piece).
+ */
+function separate(mask: Uint8Array, w: number, h: number, r: number, minArea: number): Blob[] {
+  const seedsMask = morph(mask, w, h, r, false);
+  const seeds = components(seedsMask, w, h, Math.max(16, minArea * 0.15));
+  const label = new Int32Array(w * h);
+  let queue: number[] = [];
+  seeds.forEach((b, k) => { for (const i of b.pixels) { label[i] = k + 1; queue.push(i); } });
+  while (queue.length) {
+    const next: number[] = [];
+    for (const i of queue) {
+      const x = i % w, l = label[i];
+      const nb = [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i >= w ? i - w : -1, i < w * (h - 1) ? i + w : -1];
+      for (const j of nb) if (j >= 0 && mask[j] && !label[j]) { label[j] = l; next.push(j); }
+    }
+    queue = next;
+  }
+  const out: Blob[] = [];
+  const groups: number[][] = seeds.map(() => []);
+  for (let i = 0; i < label.length; i++) if (label[i]) groups[label[i] - 1].push(i);
+  for (const g of groups) {
+    if (g.length < minArea) continue;
+    const rows = new Map<number, [number, number]>();
+    let edge = false;
+    for (const i of g) {
+      const x = i % w, y = (i - x) / w;
+      const rr = rows.get(y);
+      if (!rr) rows.set(y, [x, x]); else { if (x < rr[0]) rr[0] = x; if (x > rr[1]) rr[1] = x; }
+      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) edge = true;
+    }
+    const pts: Pt[] = [];
+    for (const [y, [a, b]] of rows) pts.push({ x: a, y }, { x: b + 1, y }, { x: a, y: y + 1 }, { x: b + 1, y: y + 1 });
+    out.push({ area: g.length, pts, touchesEdge: edge, pixels: Int32Array.from(g) });
+  }
+  return out;
+}
+
 interface Fit { rough: Quad; hull: Pt[]; fill: number; hullFill: number; good: boolean }
 
 function fitBlob(b: Blob): Fit | null {
@@ -518,35 +558,39 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
 
   const grad = sobel(img);
   const unit = Math.max(1, Math.round(Math.max(w, h) / 500));
-  mask = morph(morph(mask, w, h, unit, true), w, h, unit, false); // close small gaps
+  // No gap closing: prints laid close together are separated by only a few
+  // pixels of floor, and closing would weld them into one blob.
   mask = fillHoles(mask, w, h);
-  mask = morph(morph(mask, w, h, unit * 3, false), w, h, unit * 3, true); // open: cut thin bridges
+  mask = morph(morph(mask, w, h, unit, false), w, h, unit, true); // drop specks and hairlines
 
   const minArea = (opts.minArea ?? 0.004) * w * h;
   const bgT = t * 0.75;
   const isBg = (x: number, y: number) => dist[y * w + x] < bgT;
   const out: Detection[] = [];
-  const blobs = components(mask, w, h, minArea);
+  const blobs = separate(mask, w, h, unit * 3, minArea);
   const fits = blobs.map(fitBlob);
-  // Typical print size, from the blobs that are clearly single prints.
-  const goodAreas = blobs.filter((_, i) => fits[i]?.good && !blobs[i].touchesEdge).map((b) => b.area).sort((a, b) => a - b);
-  const typical = goodAreas.length ? goodAreas[Math.floor(goodAreas.length / 2)] : 0;
-  // Typical print shape, for unpacking clusters of touching prints.
-  const sides: number[][] = [];
-  blobs.forEach((b, i) => {
-    const f = fits[i];
-    if (!f?.good || b.touchesEdge) return;
-    const q = f.rough, e0 = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y), e1 = Math.hypot(q[2].x - q[1].x, q[2].y - q[1].y);
-    sides.push([Math.max(e0, e1), Math.min(e0, e1)]);
-  });
+  // Typical print size, from blobs that are clearly single prints. Prints laid
+  // edge to edge can fuse into neat rectangles of two, so take a low
+  // percentile first, then the median of blobs near that size.
+  const goodIdx = blobs.map((_, i) => i).filter((i) => fits[i]?.good && !blobs[i].touchesEdge);
+  const goodAreas = goodIdx.map((i) => blobs[i].area).sort((a, b) => a - b);
+  const rough0 = goodAreas.length ? goodAreas[Math.floor(goodAreas.length * 0.3)] : 0;
+  const singles = goodIdx.filter((i) => blobs[i].area > rough0 * 0.7 && blobs[i].area < rough0 * 1.45);
   const med = (v: number[]) => [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)];
+  const typical = singles.length ? med(singles.map((i) => blobs[i].area)) : 0;
+  // Typical print shape, for unpacking clusters of touching prints.
+  const sides = singles.map((i) => {
+    const q = fits[i]!.rough, e0 = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y), e1 = Math.hypot(q[2].x - q[1].x, q[2].y - q[1].y);
+    return [Math.max(e0, e1), Math.min(e0, e1)];
+  });
   const L = sides.length ? med(sides.map((s2) => s2[0])) : 0, S = sides.length ? med(sides.map((s2) => s2[1])) : 0;
 
   blobs.forEach((b, i) => {
     const f = fits[i];
     if (!f) return;
     const big = typical > 0 && b.area > typical * 1.15;
-    if (!f.good && !b.touchesEdge && big && L > 0) {
+    const oversized = typical > 0 && b.area > typical * 1.6;
+    if ((!f.good && big || oversized) && L > 0) {
       const quads = packCluster(b, w, h, L, S, typical);
       if (quads.length >= 1) {
         // Cluster pieces keep their packed outline: snapping would reach into the neighbour.

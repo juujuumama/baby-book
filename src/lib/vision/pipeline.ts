@@ -3,7 +3,7 @@ import { makeSig, rankMatches, type Candidate, type Sig } from './match';
 import { fitSize, resizeRaster, type Raster } from './raster';
 import { landscapeOrder, warpQuad, type Quad } from './warp';
 
-export const DETECT_EDGE = 1000;
+export const DETECT_EDGE = 1400;
 
 export interface FoundPrint {
   /** Corners in the coordinates of the raster passed in. */
@@ -30,15 +30,33 @@ export function printSig(src: Raster, quad: Quad): { image: Raster; sig: Sig } {
   return { image, sig: makeSig(image) };
 }
 
+/** True for bright patches with almost no detail, like glare on a shiny floor. */
+export function featureless(r: Raster): boolean {
+  const { w, h, data } = r;
+  let sum = 0, n = 0, bright = 0;
+  for (let y = 1; y < h - 1; y += 2) for (let x = 1; x < w - 1; x += 2) {
+    const i = (y * w + x) * 4;
+    const g = (k: number) => 0.299 * data[k] + 0.587 * data[k + 1] + 0.114 * data[k + 2];
+    sum += Math.abs(g(i + 4) - g(i - 4)) + Math.abs(g(i + w * 4) - g(i - w * 4));
+    bright += g(i);
+    n++;
+  }
+  // Glare is bright and smooth; a print of clear sky is smooth but not glaring.
+  return n > 0 && sum / n < 3 && bright / n > 170;
+}
+
 /** Find every print in a photo of a table and rank library matches for each. */
 export function analyzeTable(src: Raster, library: Map<string, Sig>): FoundPrint[] {
   const d = fitSize(src.w, src.h, DETECT_EDGE);
   const small = d.scale < 1 ? resizeRaster(src, d.w, d.h) : src;
   const k = src.w / small.w;
   const dets: Detection[] = detectPrints(small);
-  return dets.map((det) => {
+  const out: FoundPrint[] = [];
+  for (const det of dets) {
     const quad = det.quad.map((p) => ({ x: p.x * k, y: p.y * k })) as Quad;
     const { image, sig } = printSig(src, quad);
-    return { quad, doubtful: det.doubtful, image, candidates: rankMatches(sig, library) };
-  });
+    if (featureless(image)) continue;
+    out.push({ quad, doubtful: det.doubtful, image, candidates: rankMatches(sig, library) });
+  }
+  return out;
 }

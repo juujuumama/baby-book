@@ -8,6 +8,9 @@ import { ImportButton } from './ImportButton';
 import { LiveSort } from './LiveSort';
 import { TableSort } from './TableSort';
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const fmtMonth = (taken: string) => `${MONTHS[+taken.slice(5, 7) - 1]} ${taken.slice(0, 4)}`;
+
 type Mode = { kind: 'home' } | { kind: 'table'; file: File } | { kind: 'live' };
 
 export function SortPrints() {
@@ -40,11 +43,15 @@ export function SortPrints() {
 
   if (!photos.length) {
     return (
-      <div class="empty card">
-        <div class="empty-art" aria-hidden="true">🗂️</div>
-        <h2>Add photos first</h2>
-        <p>To sort your prints, first add the same months' photos from your camera roll. The app matches each print to one of them.</p>
-        <ImportButton label="Choose photos" />
+      <div class="card steps">
+        <h2>Sort your prints in two steps</h2>
+        <ol>
+          <li>
+            <strong>Add your camera-roll photos</strong> for the months your prints cover. The app matches each print to one of these, so add the originals, not a picture of the prints.
+            <div class="row"><ImportButton label="Add camera-roll photos" /></div>
+          </li>
+          <li class="muted"><strong>Take one photo of your prints</strong> laid out on the floor. You'll do this here once your photos are added.</li>
+        </ol>
       </div>
     );
   }
@@ -67,11 +74,20 @@ export function SortPrints() {
   }
 
   const ready = !!sigs && !prep;
+  const dated = photos.filter((p) => p.taken).map((p) => p.taken!).sort();
+  const span = dated.length ? `${fmtMonth(dated[0])} – ${fmtMonth(dated[dated.length - 1])}` : '';
   return (
     <div class="sort">
       <div class="card intro">
         <h2>Sort your prints</h2>
         <p class="muted">Match the prints in your envelopes to your photos. Each one gets its age, date, and place in order.</p>
+        <p class="library-note">
+          Matching against <strong>{photos.length} {photos.length === 1 ? 'photo' : 'photos'}</strong> in your book{span ? ` (${span})` : ''}.{' '}
+          <ImportButton label="Add more" class="link-btn" />
+        </p>
+        {photos.length < 20 && (
+          <p class="warn-note">Only {photos.length} {photos.length === 1 ? 'photo is' : 'photos are'} in your book. Prints can only be matched to photos you've added, so add the camera-roll photos for the months your prints cover first.</p>
+        )}
         {prep && (
           <>
             <div class="progress"><div class="progress-fill" style={{ width: `${Math.round((prep.done / Math.max(1, prep.total)) * 100)}%` }} /></div>

@@ -299,3 +299,39 @@ describe('a wooden floor', () => {
     expect(correct, notes.join(', ')).toBeGreaterThanOrEqual(26);
   }, 60000);
 });
+
+describe('prints packed tightly', () => {
+  it('separates ~60 prints laid in rows with hairline gaps', () => {
+    const library = new Map<string, Sig>();
+    const photos: Raster[] = [];
+    for (let i = 0; i < 90; i++) {
+      const p = fakePhoto(5000 + i, 300, 225);
+      photos.push(p);
+      library.set(`p${i}`, makeSig(p));
+    }
+    // Portrait shot of the floor, like holding the phone upright over a long layout.
+    const W = 1500, H = 2000;
+    const scene = plankFloor(W, H, 4);
+    const r = rng(8);
+    const truth: { id: string; c: Pt }[] = [];
+    const pw = 240, ph = 160;
+    for (let row = 0; row < 11; row++) for (let col = 0; col < 5; col++) {
+      const n = row * 5 + col, idx = (n * 11 + 7) % 90;
+      // Gaps of only a few pixels; some neighbours touch.
+      const gapX = (n % 4 === 0) ? 0 : 4 + r() * 6, gapY = (n % 7 === 0) ? 0 : 3 + r() * 5;
+      const c = { x: 160 + col * (pw + 30) + gapX, y: 140 + row * (ph + 8) + gapY };
+      paste(scene, toPrint(photos[idx], 6000 + n), rotatedRect(c.x, c.y, pw, ph, (r() - 0.5) * 0.04));
+      truth.push({ id: `p${idx}`, c });
+    }
+    const found = analyzeTable(scene, library);
+    const decisions = batchVerdicts(found.map((f) => f.candidates), () => false);
+    let correct = 0, wrong = 0;
+    for (const t of truth) {
+      const k = found.findIndex((p) => Math.hypot(p.quad.reduce((s, q) => s + q.x, 0) / 4 - t.c.x, p.quad.reduce((s, q) => s + q.y, 0) / 4 - t.c.y) < 40);
+      if (k < 0) continue;
+      if (decisions[k].verdict === 'match') { if (decisions[k].id === t.id) correct++; else wrong++; }
+    }
+    expect(wrong).toBe(0);
+    expect(correct).toBeGreaterThanOrEqual(48);
+  }, 90000);
+});
