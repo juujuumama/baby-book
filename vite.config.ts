@@ -10,7 +10,7 @@ export default defineConfig({
     preact(),
     VitePWA({
       registerType: 'autoUpdate',
-      injectRegister: 'auto',
+      injectRegister: null, // registered in src/main.tsx so updates apply right away
       includeAssets: ['icon.svg', 'apple-touch-icon.png'],
       manifest: {
         name: 'Baby Book',
