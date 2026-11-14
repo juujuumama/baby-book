@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { makeSig, verdict, type Sig } from '../src/lib/vision/match';
+import { batchVerdicts, makeSig, verdict, type Sig } from '../src/lib/vision/match';
 import { analyzeTable } from '../src/lib/vision/pipeline';
 import { bilinearRGBA, type Raster } from '../src/lib/vision/raster';
 import { applyH, homography, type Pt } from '../src/lib/vision/warp';
@@ -216,5 +216,86 @@ describe('a big batch', () => {
     }
     expect(wrongConfident, misses.join(' ')).toBe(0);
     expect(correct, misses.join(' ')).toBeGreaterThanOrEqual(36);
+  }, 60000);
+});
+
+/** Soft, low-contrast photos in skin, beige and brown tones: the hardest case on a wood floor. */
+function warmPhoto(seed: number, w: number, h: number): Raster {
+  const r = rng(seed);
+  const warm = [[236, 200, 170], [224, 180, 150], [200, 150, 120], [250, 235, 215], [180, 200, 225], [150, 120, 95], [240, 220, 200], [205, 170, 140], [120, 150, 190], [90, 70, 60]];
+  const pick = () => warm[Math.floor(r() * warm.length)].map((v) => Math.max(0, Math.min(255, v + (r() - 0.5) * 50)));
+  const bg = pick();
+  const shapes = Array.from({ length: 7 }, () => ({ x: r() * w, y: r() * h, rx: (0.08 + r() * 0.3) * w, ry: (0.08 + r() * 0.3) * h, c: pick(), box: r() < 0.5 }));
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let px = bg;
+    for (const s of shapes) {
+      const inside = s.box ? Math.abs(x - s.x) < s.rx && Math.abs(y - s.y) < s.ry : ((x - s.x) / s.rx) ** 2 + ((y - s.y) / s.ry) ** 2 < 1;
+      if (inside) px = s.c;
+    }
+    data.set([...px, 255], (y * w + x) * 4);
+  }
+  // Soften like a phone photo of a soft scene.
+  const out = new Uint8ClampedArray(data);
+  for (let y = 2; y < h - 2; y++) for (let x = 2; x < w - 2; x++) for (let k = 0; k < 3; k++) {
+    let s = 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) s += data[((y + dy) * w + x + dx) * 4 + k];
+    out[(y * w + x) * 4 + k] = s / 25;
+  }
+  return { w, h, data: out };
+}
+
+/** Wood planks: several tones, grain, and dark seams between boards. */
+function plankFloor(w: number, h: number, seed: number): Raster {
+  const r = rng(seed);
+  const tones = [[176, 128, 86], [160, 112, 72], [188, 140, 96], [150, 104, 66]];
+  const pw = Math.round(h / 11.6);
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const plank = Math.floor(y / pw), t = tones[plank % 4], off = (plank * 977) % w;
+    for (let x = 0; x < w; x++) {
+      const grain = Math.sin((x + off) * 0.02 + Math.sin(y * 0.1 + plank) * 2) * 10 + (r() - 0.5) * 12;
+      const seam = y % pw < 2 ? 0.55 : 1;
+      data.set([(t[0] + grain) * seam, (t[1] + grain * 0.75) * seam, (t[2] + grain * 0.55) * seam, 255], (y * w + x) * 4);
+    }
+  }
+  return { w, h, data };
+}
+
+describe('a wooden floor', () => {
+  it('sorts 30 warm-toned prints laid on planks without wrong matches', () => {
+    const library = new Map<string, Sig>();
+    const photos: Raster[] = [];
+    for (let i = 0; i < 60; i++) {
+      const p = i % 4 === 0 ? warmPhoto(3000 + i, 216, 288) : warmPhoto(3000 + i, 288, 216);
+      photos.push(p);
+      library.set(`p${i}`, makeSig(p));
+    }
+    const W = 2000, H = 1500;
+    const scene = plankFloor(W, H, 9);
+    const r = rng(31);
+    const truth: { id: string; c: Pt }[] = [];
+    for (let n = 0; n < 30; n++) {
+      const idx = (n * 13 + 5) % 60;
+      const print = toPrint(photos[idx], 4000 + n);
+      const [pw, ph] = print.w >= print.h ? [270, 180] : [180, 270];
+      const c = { x: 190 + (n % 6) * 325 + (r() - 0.5) * 30, y: 165 + Math.floor(n / 6) * 292 + (r() - 0.5) * 24 };
+      paste(scene, print, rotatedRect(c.x, c.y, pw, ph, (r() - 0.5) * 0.35));
+      truth.push({ id: `p${idx}`, c });
+    }
+    const found = analyzeTable(scene, library);
+    const decisions = batchVerdicts(found.map((f) => f.candidates), () => false);
+    let correct = 0, wrong = 0;
+    const notes: string[] = [];
+    for (const t of truth) {
+      const k = found.findIndex((p) => Math.hypot(p.quad.reduce((s, q) => s + q.x, 0) / 4 - t.c.x, p.quad.reduce((s, q) => s + q.y, 0) / 4 - t.c.y) < 60);
+      if (k < 0) { notes.push(`${t.id}: not found`); continue; }
+      const d = decisions[k];
+      if (d.verdict === 'match' && d.id === t.id) correct++;
+      else if (d.verdict === 'match') { wrong++; notes.push(`${t.id}: WRONG ${d.id}`); }
+      else notes.push(`${t.id}: ${d.verdict}`);
+    }
+    expect(wrong, notes.join(', ')).toBe(0);
+    expect(correct, notes.join(', ')).toBeGreaterThanOrEqual(26);
   }, 60000);
 });

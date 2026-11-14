@@ -3,11 +3,12 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { saveFiles } from '../lib/backup';
 import { byTakenIds, fullLabel, sameMomentFn, shortLabel, type PrintInfo } from '../lib/printLabels';
 import { rasterFromFile, rasterToCanvas } from '../lib/vision/browser';
-import { verdict, type Candidate, type Sig, type Verdict } from '../lib/vision/match';
+import { batchVerdicts, type Candidate, type Sig, type Verdict } from '../lib/vision/match';
 import { analyzeTable } from '../lib/vision/pipeline';
 import type { Raster } from '../lib/vision/raster';
 import type { Pt, Quad } from '../lib/vision/warp';
 import { patchPhotos, useStore } from '../store';
+import { OrderWalk } from './OrderWalk';
 import { Sheet } from './Sheet';
 import { Thumb } from './Thumb';
 
@@ -52,6 +53,7 @@ export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: 
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<number | null>(null);
   const [zoom, setZoom] = useState(false);
+  const [walking, setWalking] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -64,10 +66,12 @@ export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: 
         setBase(rasterToCanvas(raster));
         await new Promise((r) => setTimeout(r, 60)); // let "Looking…" paint first
         const same = sameMomentFn(byId);
-        const results = analyzeTable(raster, sigs).map((f): Found => {
-          const v = verdict(f.candidates, same);
-          return { quad: f.quad, print: rasterToCanvas(f.image).toDataURL('image/jpeg', 0.85), candidates: f.candidates, verdict: v, chosen: v === 'match' ? f.candidates[0].id : null, confirmed: false };
-        });
+        const analyzed = analyzeTable(raster, sigs);
+        const decisions = batchVerdicts(analyzed.map((f) => f.candidates), same);
+        const results = analyzed.map((f, i): Found => ({
+          quad: f.quad, print: rasterToCanvas(f.image).toDataURL('image/jpeg', 0.85), candidates: f.candidates,
+          verdict: decisions[i].verdict, chosen: decisions[i].id, confirmed: false,
+        }));
         if (!live) return;
         setFound(results);
         const matched = results.filter((r) => r.chosen).map((r) => r.chosen!);
@@ -200,7 +204,8 @@ export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: 
 
       {found && found.length > 0 && (
         <>
-          <p class="muted small center">Tap a print to check or change its match.</p>
+          <button class="btn primary block walk-start" onClick={() => setWalking(true)}>Go through in order ›</button>
+          <p class="muted small center">Swipe through the prints one by one and stack them as you go. Or tap a print above to check its match.</p>
           {flagged.length > 0 && (
             <section class="card flagged">
               <h3>Needs a look ({flagged.length})</h3>
@@ -240,6 +245,12 @@ export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: 
         </>
       )}
 
+      {walking && base && found && (
+        <OrderWalk base={base} positions={positions} byId={byId} total={sorted.length}
+          steps={[...sorted.map(({ f, i }) => ({ quad: f.quad, print: f.print, n: order.get(i)!, photoId: f.chosen, index: i })),
+            ...flagged.map(({ f, i }) => ({ quad: f.quad, print: f.print, n: null, photoId: null, index: i }))]}
+          onClose={() => setWalking(false)} onFix={(i) => setOpen(i)} />
+      )}
       {open !== null && found && (
         <PrintDetail f={found[open]} positions={positions} byId={byId} onChoose={(id) => choose(open, id)} onClose={() => setOpen(null)} />
       )}

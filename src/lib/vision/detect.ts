@@ -63,7 +63,7 @@ function boxBlur(r: Raster, radius: number): Raster {
 }
 
 /** k-means on border pixels: a small palette describing the background. */
-function backgroundPalette(r: Raster, k = 4): [number, number, number][] {
+function backgroundPalette(r: Raster, k = 8, share = 0.05): [number, number, number][] {
   const { w, h, data } = r;
   const band = Math.max(2, Math.round(Math.min(w, h) * 0.03));
   const samples: [number, number, number][] = [];
@@ -86,7 +86,7 @@ function backgroundPalette(r: Raster, k = 4): [number, number, number][] {
     if (it === 7) {
       // Prints that reach the edge of the shot show up on the border too; keep
       // only colours that cover a good share of it (the table itself).
-      const big = kept.map((t, i) => [t[3], i] as const).filter(([n]) => n > samples.length * 0.15).map(([, i]) => centers[i]);
+      const big = kept.map((t, i) => [t[3], i] as const).filter(([n]) => n > samples.length * share).map(([, i]) => centers[i]);
       if (big.length) centers = big;
     }
   }
@@ -448,7 +448,9 @@ function packCluster(b: Blob, w: number, h: number, L: number, S: number, typica
     return { cx, cy, a, lw, lh, score: outside / PER + 0.3 * fresh / n };
   };
 
-  for (let iter = 0; iter < 12; iter++) {
+  // Never place more prints than the cluster's area can hold.
+  const maxPrints = Math.max(1, Math.ceil((b.area / typical) * 1.1));
+  for (let iter = 0; iter < maxPrints; iter++) {
     let remaining = 0;
     for (let i = 0; i < m.length; i++) if (m[i] && !covered[i]) remaining++;
     if (remaining < typical * 0.35) break;
@@ -514,25 +516,8 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
   let mask: Uint8Array = new Uint8Array(w * h);
   for (let i = 0; i < mask.length; i++) mask[i] = dist[i] > t ? 1 : 0;
 
-  // Sharp edges: a print's outline is a crisp edge even where its colours
-  // match the table, while wood grain or carpet is soft. Edges sharper than
-  // anything on the table's border join the mask, so filling holes then
-  // fills each print's closed outline.
   const grad = sobel(img);
-  const mag = new Float32Array(w * h);
-  for (let i = 0; i < mag.length; i++) mag[i] = Math.hypot(grad.gx[i], grad.gy[i]);
-  const bmag: number[] = [];
-  for (let y = 1; y < h - 1; y += 2) for (let x = 1; x < w - 1; x += 2) {
-    if (x < band || x >= w - band || y < band || y >= h - band) bmag.push(mag[y * w + x]);
-  }
-  bmag.sort((a, b) => a - b);
-  const gT = Math.max(60, (bmag[Math.floor(bmag.length * 0.8)] ?? 0) * 3);
-  let edges: Uint8Array = new Uint8Array(w * h);
-  for (let i = 0; i < edges.length; i++) edges[i] = mag[i] > gT ? 1 : 0;
-
   const unit = Math.max(1, Math.round(Math.max(w, h) / 500));
-  edges = morph(edges, w, h, unit, true);
-  for (let i = 0; i < mask.length; i++) mask[i] |= edges[i];
   mask = morph(morph(mask, w, h, unit, true), w, h, unit, false); // close small gaps
   mask = fillHoles(mask, w, h);
   mask = morph(morph(mask, w, h, unit * 3, false), w, h, unit * 3, true); // open: cut thin bridges
@@ -560,10 +545,10 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
   blobs.forEach((b, i) => {
     const f = fits[i];
     if (!f) return;
-    const big = typical > 0 && b.area > typical * 1.4;
+    const big = typical > 0 && b.area > typical * 1.15;
     if (!f.good && !b.touchesEdge && big && L > 0) {
       const quads = packCluster(b, w, h, L, S, typical);
-      if (quads.length >= 2) {
+      if (quads.length >= 1) {
         // Cluster pieces keep their packed outline: snapping would reach into the neighbour.
         for (const q of quads) out.push({ quad: q, fill: 1, area: polygonArea(q), doubtful: false, touchesEdge: false });
         return;

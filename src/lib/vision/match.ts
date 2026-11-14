@@ -237,3 +237,22 @@ export function verdict(c: Candidate[], sameMoment: (a: string, b: string) => bo
   if (a.score >= 0.8 || (a.score >= 0.6 && (margin >= 0.06 || sameMoment(a.id, b.id)))) return 'match';
   return 'unsure';
 }
+
+/**
+ * Verdicts for a whole batch. A photo is normally printed once, so when two
+ * prints both claim the same photo, the weaker claim gives way and is judged
+ * on its remaining candidates.
+ */
+export function batchVerdicts(lists: Candidate[][], sameMoment: (a: string, b: string) => boolean): { verdict: Verdict; id: string | null }[] {
+  const order = lists.map((c, i) => ({ i, s: c[0]?.score ?? 0 })).sort((a, b) => b.s - a.s);
+  const claimed = new Set<string>();
+  const out: Verdict[] = new Array(lists.length).fill('none');
+  const chosen: (string | null)[] = new Array(lists.length).fill(null);
+  for (const { i } of order) {
+    const rest = lists[i].filter((c) => !claimed.has(c.id));
+    const v = verdict(rest, sameMoment);
+    out[i] = rest.length === lists[i].length ? v : v === 'match' ? 'match' : 'unsure';
+    if (v === 'match') { claimed.add(rest[0].id); chosen[i] = rest[0].id; }
+  }
+  return out.map((v, i) => ({ verdict: v, id: chosen[i] }));
+}
