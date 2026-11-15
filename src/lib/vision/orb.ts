@@ -128,12 +128,23 @@ function popcount(v: number): number {
   return (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
 }
 
+export interface OrbFit { inliers: number; c: number; s: number; tx: number; ty: number }
+
 /**
  * How many feature points of `a` (a print) agree with `b` (a photo) under one
  * consistent shift + turn + scale. Higher = more surely the same picture.
  */
 export function orbInliers(a: Orb, b: Orb): number {
-  if (a.n < 8 || b.n < 8) return 0;
+  return orbFit(a, b).inliers;
+}
+
+/**
+ * Like orbInliers, plus the best transform mapping photo `b` into print
+ * region `a` (x_a = c·x_b − s·y_b + tx, y_a = s·x_b + c·y_b + ty).
+ */
+export function orbFit(a: Orb, b: Orb): OrbFit {
+  const none = { inliers: 0, c: 1, s: 0, tx: 0, ty: 0 };
+  if (a.n < 8 || b.n < 8) return none;
   // Best match for each point of a, kept only if clearly better than the runner-up.
   const mi: number[] = [], mj: number[] = [];
   for (let i = 0; i < a.n; i++) {
@@ -148,33 +159,32 @@ export function orbInliers(a: Orb, b: Orb): number {
     if (bj >= 0 && best < 70 && best < second * 0.85) { mi.push(i); mj.push(bj); }
   }
   const m = mi.length;
-  if (m < 4) return m;
-  // RANSAC over similarity transforms (2 point pairs define one).
+  if (m < 4) return { ...none, inliers: m };
+  // RANSAC over similarity transforms (2 point pairs define one), photo → print.
   const r = rng(m * 7919 + a.n);
-  const tol = Math.max(b.w, b.h) * 0.025, tol2 = tol * tol;
-  let bestIn = 0;
+  const tol = Math.max(a.w, a.h) * 0.025, tol2 = tol * tol;
+  let best = none;
   for (let it = 0; it < 300; it++) {
     const p = Math.floor(r() * m), q = Math.floor(r() * m);
     if (p === q) continue;
-    const ax1 = a.x[mi[p]], ay1 = a.y[mi[p]], ax2 = a.x[mi[q]], ay2 = a.y[mi[q]];
     const bx1 = b.x[mj[p]], by1 = b.y[mj[p]], bx2 = b.x[mj[q]], by2 = b.y[mj[q]];
-    const dax = ax2 - ax1, day = ay2 - ay1, dbx = bx2 - bx1, dby = by2 - by1;
-    const la = dax * dax + day * day;
-    if (la < 100) continue;
-    // b = s·R·a + t  →  [c -s; s c] with c = s cosθ, s = s sinθ
-    const c = (dax * dbx + day * dby) / la, sn = (dax * dby - day * dbx) / la;
+    const ax1 = a.x[mi[p]], ay1 = a.y[mi[p]], ax2 = a.x[mi[q]], ay2 = a.y[mi[q]];
+    const dbx = bx2 - bx1, dby = by2 - by1, dax = ax2 - ax1, day = ay2 - ay1;
+    const lb = dbx * dbx + dby * dby;
+    if (lb < 100) continue;
+    const c = (dbx * dax + dby * day) / lb, sn = (dbx * day - dby * dax) / lb;
     const scale = Math.hypot(c, sn);
     if (scale < 0.3 || scale > 3.5) continue;
-    const tx = bx1 - (c * ax1 - sn * ay1), ty = by1 - (sn * ax1 + c * ay1);
+    const tx = ax1 - (c * bx1 - sn * by1), ty = ay1 - (sn * bx1 + c * by1);
     let inl = 0;
     for (let k = 0; k < m; k++) {
-      const x = a.x[mi[k]], y = a.y[mi[k]];
-      const ex = c * x - sn * y + tx - b.x[mj[k]], ey = sn * x + c * y + ty - b.y[mj[k]];
+      const x = b.x[mj[k]], y = b.y[mj[k]];
+      const ex = c * x - sn * y + tx - a.x[mi[k]], ey = sn * x + c * y + ty - a.y[mi[k]];
       if (ex * ex + ey * ey < tol2) inl++;
     }
-    if (inl > bestIn) bestIn = inl;
+    if (inl > best.inliers) best = { inliers: inl, c, s: sn, tx, ty };
   }
-  return bestIn;
+  return best;
 }
 
 /** Photos most likely to contain this print, by voting with exact matches on

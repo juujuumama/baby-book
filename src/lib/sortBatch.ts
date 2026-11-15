@@ -3,8 +3,8 @@ import { byTakenIds, sameMomentFn } from './printLabels';
 import { photoKey, updatePile, type Pile, type SavedPrint } from './sortSession';
 import type { Photo } from './types';
 import { rasterFromFile, rasterToCanvas } from './vision/browser';
-import { batchVerdicts } from './vision/match';
-import { matchPrint, orbVerdict, type MatchContext } from './vision/matcher';
+import type { Candidate } from './vision/match';
+import { matchPrintAt, resolveFloor, type MatchContext } from './vision/matcher';
 import { analyzeTable } from './vision/pipeline';
 import type { Raster } from './vision/raster';
 
@@ -22,14 +22,15 @@ export async function sortFloorPhoto(
   const raster = await rasterFromFile(file, ANALYZE_EDGE);
   await new Promise((r) => setTimeout(r, 30)); // let the screen update first
   const analyzed = analyzeTable(raster, new Map());
-  const lists: import('./vision/match').Candidate[][] = [];
-  for (const f of analyzed) {
-    lists.push(matchPrint(f.image, ctx));
-    if (lists.length % 8 === 0) await new Promise((r) => setTimeout(r, 0));
+  const quads = analyzed.map((f) => ({ quad: f.quad, doubtful: f.doubtful }));
+  const lists: Candidate[][] = [];
+  for (const q of quads) {
+    lists.push(matchPrintAt(raster, q.quad, ctx, 6));
+    if (lists.length % 5 === 0) await new Promise((r) => setTimeout(r, 0)); // keep the screen responsive
   }
-  const decisions = batchVerdicts(lists, sameMomentFn(byId), analyzed.map((f) => f.doubtful), orbVerdict);
-  const results: SavedPrint[] = analyzed.map((f, i) => ({
-    quad: f.quad, candidates: lists[i], verdict: decisions[i].verdict, chosen: decisions[i].id, confirmed: false,
+  // Matching also places prints: outlines that were off are replaced by where each photo really is.
+  const results: SavedPrint[] = resolveFloor(quads, lists, sameMomentFn(byId)).map((f) => ({
+    quad: f.quad, candidates: f.candidates, verdict: f.verdict, chosen: f.chosen, confirmed: false,
   }));
   const blob = await new Promise<Blob | null>((r) => rasterToCanvas(raster).toBlob(r, 'image/jpeg', 0.88));
   if (blob) await putExtraBlob(photoKey(pile.id), blob);

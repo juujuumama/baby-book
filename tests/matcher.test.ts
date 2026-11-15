@@ -59,3 +59,54 @@ describe('feature-point matching', () => {
     }
   }, 60000);
 });
+
+import { matchFloor, matchPrintAt } from '../src/lib/vision/matcher';
+import { applyH, homography, type Pt, type Quad } from '../src/lib/vision/warp';
+import { bilinearRGBA } from '../src/lib/vision/raster';
+
+function paste(dst: Raster, img: Raster, quad: Pt[]) {
+  const H = homography(quad, [{ x: 0, y: 0 }, { x: img.w, y: 0 }, { x: img.w, y: img.h }, { x: 0, y: img.h }]);
+  const xs = quad.map((p) => p.x), ys = quad.map((p) => p.y);
+  for (let y = Math.floor(Math.min(...ys)); y < Math.ceil(Math.max(...ys)); y++) for (let x = Math.floor(Math.min(...xs)); x < Math.ceil(Math.max(...xs)); x++) {
+    const p = applyH(H, x + 0.5, y + 0.5);
+    if (p.x < 0 || p.y < 0 || p.x >= img.w || p.y >= img.h) continue;
+    dst.data.set(bilinearRGBA(img, p.x - 0.5, p.y - 0.5), (y * dst.w + x) * 4);
+  }
+}
+
+describe('matching with an outline that is off', () => {
+  it('finds the print and corrects the outline when it is off by half a print', () => {
+    const photos = Array.from({ length: 30 }, (_, i) => detailedPhoto(300 + i, 640, 480));
+    const sigs = new Map<string, Sig>(), orbs = new Map<string, Orb[]>();
+    photos.forEach((p, i) => { const thumb = shrink(p, 480); sigs.set(`p${i}`, makeSig(thumb)); orbs.set(`p${i}`, photoOrbs(thumb)); });
+    const ctx = buildContext(sigs, orbs);
+    // A row of touching prints, each ~140 px wide, on a plain floor.
+    const W = 1400, H = 400, pw = 140, ph = 93;
+    const scene: Raster = { w: W, h: H, data: new Uint8ClampedArray(W * H * 4).fill(200) };
+    const order = [4, 9, 13, 2, 21, 17, 26, 8];
+    order.forEach((idx, n) => {
+      const x0 = 100 + n * (pw + 2), y0 = 150;
+      paste(scene, asPrint(photos[idx], 70 + n, 640), [{ x: x0, y: y0 }, { x: x0 + pw, y: y0 }, { x: x0 + pw, y: y0 + ph }, { x: x0, y: y0 + ph }]);
+    });
+    const centres = new Map(order.map((idx, n) => [`p${idx}`, { x: 100 + n * (pw + 2) + pw / 2, y: 150 + ph / 2 }]));
+    const quads: { quad: Quad; doubtful: boolean }[] = order.map((_, n) => {
+      // Outline shifted right by half a print and down a little: it straddles two prints.
+      const x0 = 100 + n * (pw + 2) + pw * 0.5, y0 = 150 + ph * 0.15;
+      return { quad: [{ x: x0, y: y0 }, { x: x0 + pw, y: y0 }, { x: x0 + pw, y: y0 + ph }, { x: x0, y: y0 + ph }], doubtful: false };
+    });
+    void matchPrintAt;
+    const res = matchFloor(scene, quads, ctx, () => false);
+    let good = 0, wrong = 0;
+    for (const r of res) {
+      if (r.verdict !== 'match') continue;
+      const truth = centres.get(r.chosen!)!;
+      const ac = { x: r.quad.reduce((s2, p) => s2 + p.x, 0) / 4, y: r.quad.reduce((s2, p) => s2 + p.y, 0) / 4 };
+      // A confident match must put its outline on that photo's real print.
+      if (Math.hypot(ac.x - truth.x, ac.y - truth.y) < pw * 0.15) good++; else wrong++;
+    }
+    expect(wrong).toBe(0);
+    expect(good).toBeGreaterThanOrEqual(6);
+    // The misplaced outlines are replaced, not kept as extra "?" prints.
+    expect(res.filter((r) => r.verdict !== 'match').length).toBeLessThanOrEqual(1);
+  }, 60000);
+});

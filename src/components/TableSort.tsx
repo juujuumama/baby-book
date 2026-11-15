@@ -6,7 +6,7 @@ import { rasterFromFile, rasterToCanvas } from '../lib/vision/browser';
 import { type Candidate, type Verdict } from '../lib/vision/match';
 import { printSig, straighten } from '../lib/vision/pipeline';
 import { colorGradient, fitPrintAt, neighbourShape, type Grad } from '../lib/vision/fitAt';
-import { matchPrint, type MatchContext } from '../lib/vision/matcher';
+import { matchPrintAt, type MatchContext } from '../lib/vision/matcher';
 import type { Raster } from '../lib/vision/raster';
 import type { Pt, Quad } from '../lib/vision/warp';
 import { patchPhotos, useStore } from '../store';
@@ -192,9 +192,11 @@ export function TableSort({ file, pile, ctx, positions, onDone, onAnother, input
     await new Promise((r) => setTimeout(r, 30));
     try {
       gradRef.current ??= colorGradient(raster);
-      const quad = fitPrintAt(gradRef.current, p, shape);
+      let quad = fitPrintAt(gradRef.current, p, shape);
+      const candidates = matchPrintAt(raster, quad, ctx);
+      // If a photo is clearly recognised, its features say exactly where the print is.
+      if (candidates[0]?.at && (candidates[0].raw ?? 0) >= 22) quad = candidates[0].at as Quad;
       const { image } = printSig(raster, quad);
-      const candidates = matchPrint(image, ctx);
       const next: Found = { quad, print: rasterToCanvas(image).toDataURL('image/jpeg', 0.85), candidates, verdict: 'unsure', chosen: null, confirmed: false };
       setFound([...found, next]);
       setOpen(found.length);

@@ -180,7 +180,15 @@ function views(sig: Sig, aspect: number, offsets: number[], scales: number[]): V
   return out;
 }
 
-export interface Candidate { id: string; score: number; /** Feature points that agree (when checked). */ inliers?: number }
+export interface Candidate {
+  id: string; score: number;
+  /** Feature points that agree (when checked). */
+  inliers?: number;
+  /** Where this photo's print actually lies in the floor photo, when found by its feature points. */
+  at?: { x: number; y: number }[];
+  /** Agreeing feature points wherever the print lies (before discounting for being off-centre). */
+  raw?: number;
+}
 
 function score(p: Features, l: Features): number {
   const color = (maskedNcc(p.c[0], l.c[0], p.cm ?? null) + maskedNcc(p.c[1], l.c[1], p.cm ?? null) + maskedNcc(p.c[2], l.c[2], p.cm ?? null)) / 3;
