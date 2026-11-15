@@ -379,3 +379,9 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
 .warn-note { background: #fff1e6; color: #8a4a20; border-radius: 12px; padding: 10px 12px; font-size: 0.9rem; font-weight: 600; }
 .warn-card { background: #fff6ef; border-color: #f0c9ad; }
 .warn-card h3 { color: #8a4a20; margin-bottom: 4px; }
+
+.add-help { text-align: left; margin-top: 16px; background: var(--mint); border-radius: 14px; padding: 10px 14px; font-size: 0.9rem; }
+.add-help summary { font-weight: 800; color: var(--navy); cursor: pointer; }
+.add-help p { margin: 8px 0 4px; }
+.add-help ol { margin: 4px 0; padding-left: 20px; }
+.add-help li { margin: 4px 0; }

@@ -4,6 +4,7 @@ import { monthPositions } from '../lib/printLabels';
 import type { Sig } from '../lib/vision/match';
 import { loadSigs } from '../lib/vision/browser';
 import { useStore } from '../store';
+import { AddHelp } from './AddHelp';
 import { ImportButton } from './ImportButton';
 import { LiveSort } from './LiveSort';
 import { TableSort } from './TableSort';
@@ -49,6 +50,7 @@ export function SortPrints() {
           <li>
             <strong>Add your camera-roll photos</strong> for the months your prints cover. The app matches each print to one of these, so add the originals, not a picture of the prints.
             <div class="row"><ImportButton label="Add camera-roll photos" /></div>
+            <AddHelp />
           </li>
           <li class="muted"><strong>Take one photo of your prints</strong> laid out on the floor. You'll do this here once your photos are added.</li>
         </ol>

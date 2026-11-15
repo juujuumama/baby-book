@@ -3,6 +3,7 @@ import { formatRange, formatShort, monthLabel, parseYMD, weekday } from '../lib/
 import { buildTimeline, type MonthGroup } from '../lib/timeline';
 import type { Photo } from '../lib/types';
 import { patchPhoto, useStore } from '../store';
+import { AddHelp } from './AddHelp';
 import { ImportButton } from './ImportButton';
 import { PhotoViewer } from './PhotoViewer';
 import { Thumb } from './Thumb';
@@ -49,8 +50,8 @@ export function Timeline({ onGoUndated }: { onGoUndated: () => void }) {
         <div class="empty-art" aria-hidden="true">🧸</div>
         <h2>Let's fill the book</h2>
         <p>Choose photos from your camera roll. They're copied into this app on your phone, sorted by age, and never uploaded anywhere.</p>
-        <p class="muted small">Tip: you can select a whole month at a time in the photo picker.</p>
         <ImportButton label="Choose photos" />
+        <AddHelp />
       </div>
     );
   }
