@@ -1,10 +1,10 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { saveFiles } from '../lib/backup';
-import { byTakenIds, fullLabel, sameMomentFn, shortLabel, type PrintInfo } from '../lib/printLabels';
+import { byTakenIds, fullLabel, shortLabel, type PrintInfo } from '../lib/printLabels';
 import { rasterFromFile, rasterToCanvas } from '../lib/vision/browser';
-import { batchVerdicts, type Candidate, type Sig, type Verdict } from '../lib/vision/match';
-import { analyzeTable, printSig, straighten } from '../lib/vision/pipeline';
+import { type Candidate, type Sig, type Verdict } from '../lib/vision/match';
+import { printSig, straighten } from '../lib/vision/pipeline';
 import { colorGradient, fitPrintAt, neighbourShape, type Grad } from '../lib/vision/fitAt';
 import { rankMatches } from '../lib/vision/match';
 import type { Raster } from '../lib/vision/raster';
@@ -12,7 +12,8 @@ import type { Pt, Quad } from '../lib/vision/warp';
 import { patchPhotos, useStore } from '../store';
 import { OrderWalk } from './OrderWalk';
 import { getPile, photoKey, removePile, updatePile, type Pile } from '../lib/sortSession';
-import { getExtraBlob, putExtraBlob } from '../lib/db';
+import { getExtraBlob } from '../lib/db';
+import { ANALYZE_EDGE, sortFloorPhoto } from '../lib/sortBatch';
 import { Sheet } from './Sheet';
 import { Thumb } from './Thumb';
 
@@ -26,7 +27,6 @@ interface Found {
   confirmed: boolean;
 }
 
-const ANALYZE_EDGE = 2000;
 
 function centroid(q: Quad): Pt {
   return { x: (q[0].x + q[1].x + q[2].x + q[3].x) / 4, y: (q[0].y + q[1].y + q[2].y + q[3].y) / 4 };
@@ -91,23 +91,9 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
           setFound(prior.map((r) => ({ ...r, print: rasterToCanvas(straighten(raster, r.quad)).toDataURL('image/jpeg', 0.85) })));
           return;
         }
-        await new Promise((r) => setTimeout(r, 60)); // let "Looking…" paint first
-        const same = sameMomentFn(byId);
-        const analyzed = analyzeTable(raster, sigs);
-        const decisions = batchVerdicts(analyzed.map((f) => f.candidates), same, analyzed.map((f) => f.doubtful));
-        const results = analyzed.map((f, i): Found => ({
-          quad: f.quad, print: rasterToCanvas(f.image).toDataURL('image/jpeg', 0.85), candidates: f.candidates,
-          verdict: decisions[i].verdict, chosen: decisions[i].id, confirmed: false,
-        }));
+        const { results } = await sortFloorPhoto(file ?? saved!, pile, sigs, byId, (ids) => patchPhotos(ids, { printed: true }));
         if (!live) return;
-        setFound(results);
-        if (file) {
-          // Keep the floor photo so this pile can be reopened later.
-          const blob = await new Promise<Blob | null>((r) => canvasImg.toBlob(r, 'image/jpeg', 0.88));
-          if (blob) { await putExtraBlob(photoKey(pile.id), blob); await updatePile(pile.id, getPile(pile.id)?.photoIds ?? [], getPile(pile.id)?.unmatched ?? 0, { hasPhoto: true }); }
-        }
-        const matched = results.filter((r) => r.chosen).map((r) => r.chosen!);
-        if (matched.length) patchPhotos(matched, { printed: true });
+        setFound(results.map((r) => ({ ...r, print: rasterToCanvas(straighten(raster, r.quad)).toDataURL('image/jpeg', 0.85) })));
       } catch (err) {
         console.warn(err);
         if (live) setError("Couldn't read that photo. Try taking it again.");

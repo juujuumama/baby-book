@@ -9,6 +9,9 @@ import { ImportButton } from './ImportButton';
 import { LiveSort } from './LiveSort';
 import { MergeWalk } from './MergeWalk';
 import { clearPiles, removePile, startPile, usePiles, type Pile } from '../lib/sortSession';
+import { sortFloorPhoto } from '../lib/sortBatch';
+import { patchPhotos } from '../store';
+import { Sheet } from './Sheet';
 import { TableSort } from './TableSort';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -40,12 +43,37 @@ export function SortPrints() {
   const byId = useMemo(() => new Map(photos.map((p) => [p.id, p])), [photos]);
   const usedPiles = piles.filter((p) => p.photoIds.length > 0);
 
+  const [batch, setBatch] = useState<{ done: number; total: number; prints: number; failed: number; finished: boolean } | null>(null);
+
   const onFile = (e: Event) => {
     const el = e.target as HTMLInputElement;
-    const file = el.files?.[0];
+    const files = el.files ? [...el.files] : [];
     el.value = '';
-    if (file) startPile().then((pile) => setMode({ kind: 'table', file, pile }));
+    if (files.length === 1) startPile().then((pile) => setMode({ kind: 'table', file: files[0], pile }));
+    else if (files.length > 1) sortMany(files);
   };
+
+  /** Several floor photos at once: one pile each, sorted one after another. */
+  async function sortMany(files: File[]) {
+    if (!sigs) return;
+    const state = { done: 0, total: files.length, prints: 0, failed: 0, finished: false };
+    setBatch({ ...state });
+    for (const f of files) {
+      const pile = await startPile();
+      try {
+        const { results } = await sortFloorPhoto(f, pile, sigs, byId, (ids) => patchPhotos(ids, { printed: true }));
+        state.prints += results.length;
+        if (!results.length) await removePile(pile.id);
+      } catch (err) {
+        console.warn(err);
+        state.failed++;
+        await removePile(pile.id);
+      }
+      state.done++;
+      setBatch({ ...state });
+    }
+    setBatch({ ...state, finished: true });
+  }
 
   if (!photos.length) {
     return (
@@ -78,7 +106,7 @@ export function SortPrints() {
     return (
       <>
         <input ref={takeInput} type="file" accept="image/*" capture="environment" hidden onChange={onFile} />
-        <input ref={chooseInput} type="file" accept="image/*,.heic,.heif" hidden onChange={onFile} />
+        <input ref={chooseInput} id="choose-floor-photos" type="file" multiple accept="image/*,.heic,.heif" hidden onChange={onFile} />
       </>
     );
   }
@@ -134,10 +162,10 @@ export function SortPrints() {
         <div class="card mode-card">
           <div class="mode-art" aria-hidden="true">🃏🃏🃏</div>
           <h3>A whole batch</h3>
-          <p class="muted small">Lay prints on the table or floor and take one photo. Each print gets a number showing its order.</p>
+          <p class="muted small">Lay prints on the table or floor and take one photo. Each print gets a number showing its order. Already took several floor photos? Choose them all at once and each becomes a pile.</p>
           <div class="row">
             <button class="btn primary" disabled={!ready} onClick={() => takeInput.current?.click()}>Take photo</button>
-            <button class="btn" disabled={!ready} onClick={() => chooseInput.current?.click()}>Choose photo</button>
+            <button class="btn" disabled={!ready} onClick={() => chooseInput.current?.click()}>Choose photos</button>
           </div>
         </div>
         <div class="card mode-card">
@@ -162,6 +190,23 @@ export function SortPrints() {
         </ul>
       </details>
       {inputs()}
+      {batch && (
+        <Sheet title={batch.finished ? 'Piles ready' : 'Sorting your floor photos…'} onClose={() => batch.finished && setBatch(null)}>
+          <div class="progress"><div class="progress-fill" style={{ width: `${Math.round(((batch.done + (batch.finished ? 0 : 0.5)) / batch.total) * 100)}%` }} /></div>
+          <p class="muted center">
+            {batch.finished ? `${batch.done - batch.failed} floor photos sorted into piles` : `Photo ${Math.min(batch.done + 1, batch.total)} of ${batch.total}`}
+            {batch.prints ? ` · ${batch.prints} prints found` : ''}
+          </p>
+          {!batch.finished && <p class="muted small center">Keep this screen open. Each photo takes a few seconds.</p>}
+          {batch.failed > 0 && <p class="warn-note">{batch.failed} photo(s) couldn't be read.</p>}
+          {batch.finished && (
+            <>
+              <p class="small">Tap each pile below to check its "?" prints, then go through it in order to stack it.</p>
+              <div class="row end"><button class="btn primary" onClick={() => setBatch(null)}>See my piles</button></div>
+            </>
+          )}
+        </Sheet>
+      )}
     </div>
   );
 }
