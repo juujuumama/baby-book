@@ -139,3 +139,18 @@ export async function getAllSigs(): Promise<Map<string, Sig>> {
 export async function putSig(id: string, sig: Sig): Promise<void> {
   await (await db()).put('sigs', sig, id);
 }
+
+/** Other stored images (e.g. a pile's floor photo), keyed by name in the blobs store. */
+export async function putExtraBlob(key: string, blob: Blob): Promise<void> {
+  await (await db()).put('blobs', blob, key);
+}
+
+export async function getExtraBlob(key: string): Promise<Blob | undefined> {
+  const v = await (await db()).get('blobs', key);
+  if (v === undefined) return undefined;
+  return v instanceof Blob ? v : new Blob([v], { type: 'image/jpeg' });
+}
+
+export async function deleteExtraBlob(key: string): Promise<void> {
+  await (await db()).delete('blobs', key);
+}

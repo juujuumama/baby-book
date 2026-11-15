@@ -4,12 +4,13 @@ import { saveFiles } from '../lib/backup';
 import { byTakenIds, fullLabel, sameMomentFn, shortLabel, type PrintInfo } from '../lib/printLabels';
 import { rasterFromFile, rasterToCanvas } from '../lib/vision/browser';
 import { batchVerdicts, type Candidate, type Sig, type Verdict } from '../lib/vision/match';
-import { analyzeTable } from '../lib/vision/pipeline';
+import { analyzeTable, straighten } from '../lib/vision/pipeline';
 import type { Raster } from '../lib/vision/raster';
 import type { Pt, Quad } from '../lib/vision/warp';
 import { patchPhotos, useStore } from '../store';
 import { OrderWalk } from './OrderWalk';
-import { removePile, updatePile, type Pile } from '../lib/sortSession';
+import { getPile, photoKey, removePile, updatePile, type Pile } from '../lib/sortSession';
+import { getExtraBlob, putExtraBlob } from '../lib/db';
 import { Sheet } from './Sheet';
 import { Thumb } from './Thumb';
 
@@ -44,7 +45,8 @@ function quadSize(q: Quad) {
 }
 
 export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inputs }: {
-  file: File; pile: Pile; sigs: Map<string, Sig>; positions: Map<string, PrintInfo>;
+  /** A new floor photo to analyse, or null to reopen a saved pile. */
+  file: File | null; pile: Pile; sigs: Map<string, Sig>; positions: Map<string, PrintInfo>;
   onDone: () => void; onAnother: () => void; inputs: ComponentChildren;
 }) {
   const { photos } = useStore();
@@ -57,14 +59,31 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
   const [walking, setWalking] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null);
 
+  const [runId, setRunId] = useState(0);
+  const [reopened, setReopened] = useState(false);
+
   useEffect(() => {
     let live = true;
     setFound(null); setBase(null); setError(null);
     (async () => {
       try {
-        const raster: Raster = await rasterFromFile(file, ANALYZE_EDGE);
+        // A new photo, or the pile's saved one.
+        const saved = !file ? await getExtraBlob(photoKey(pile.id)) : null;
+        if (!file && !saved) {
+          setError("This pile was made before piles could be reopened. Remove it and take that floor photo again.");
+          return;
+        }
+        const raster: Raster = await rasterFromFile(file ?? saved!, ANALYZE_EDGE);
         if (!live) return;
-        setBase(rasterToCanvas(raster));
+        const canvasImg = rasterToCanvas(raster);
+        setBase(canvasImg);
+        const prior = getPile(pile.id)?.results;
+        if (!file && prior && runId === 0) {
+          // Reopen exactly as it was left, corrections included.
+          setReopened(true);
+          setFound(prior.map((r) => ({ ...r, print: rasterToCanvas(straighten(raster, r.quad)).toDataURL('image/jpeg', 0.85) })));
+          return;
+        }
         await new Promise((r) => setTimeout(r, 60)); // let "Looking…" paint first
         const same = sameMomentFn(byId);
         const analyzed = analyzeTable(raster, sigs);
@@ -75,6 +94,11 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
         }));
         if (!live) return;
         setFound(results);
+        if (file) {
+          // Keep the floor photo so this pile can be reopened later.
+          const blob = await new Promise<Blob | null>((r) => canvasImg.toBlob(r, 'image/jpeg', 0.88));
+          if (blob) { await putExtraBlob(photoKey(pile.id), blob); await updatePile(pile.id, getPile(pile.id)?.photoIds ?? [], getPile(pile.id)?.unmatched ?? 0, { hasPhoto: true }); }
+        }
         const matched = results.filter((r) => r.chosen).map((r) => r.chosen!);
         if (matched.length) patchPhotos(matched, { printed: true });
       } catch (err) {
@@ -83,7 +107,7 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
       }
     })();
     return () => { live = false; };
-  }, [file]);
+  }, [file, runId]);
 
   // Order: matched prints by time taken get 1, 2, 3…; others get "?".
   const order = useMemo(() => {
@@ -183,11 +207,13 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
   const flagged = found ? found.map((f, i) => ({ f, i })).filter(({ i }) => !order.has(i)) : [];
 
   // Keep this floor photo's pile up to date (including any corrections).
-  const pileKey = sorted.map(({ f }) => f.chosen).join(',') + '|' + flagged.length;
+  const pileKey = found ? found.map((f) => `${f.chosen}:${f.confirmed ? 1 : 0}`).join(',') : '';
   useEffect(() => {
     if (!found) return;
-    if (found.length === 0) { removePile(pile.id); return; }
-    updatePile(pile.id, sorted.map(({ f }) => f.chosen!), flagged.length);
+    if (found.length === 0 && file) { removePile(pile.id); return; }
+    updatePile(pile.id, sorted.map(({ f }) => f.chosen!), flagged.length, {
+      results: found.map(({ quad, candidates, verdict, chosen, confirmed }) => ({ quad, candidates, verdict, chosen, confirmed })),
+    });
   }, [pileKey]);
 
   return (
@@ -197,6 +223,12 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
         {found && <span class="muted small">Pile {pile.label} · {found.length} prints found</span>}
         {found && found.length > 0 && <button class="btn small" onClick={() => setZoom(!zoom)}>{zoom ? 'Fit' : 'Zoom'}</button>}
       </div>
+      {reopened && found && (
+        <div class="row reopen-row">
+          <span class="muted small">Reopened as you left it.</span>
+          <button class="btn small" onClick={() => { if (confirm('Look at this floor photo again with the latest matching? Any matches you picked by hand will be redone.')) { setReopened(false); setRunId((n) => n + 1); } }}>Run again</button>
+        </div>
+      )}
 
       <div class={`table-photo ${zoom ? 'zoomed' : ''}`}>
         {base ? <canvas ref={canvas} onClick={onCanvasClick} /> : <div class="table-placeholder">Opening photo…</div>}

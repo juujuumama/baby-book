@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
-import { db } from './db';
+import { db, deleteExtraBlob } from './db';
+import type { Candidate, Verdict } from './vision/match';
+import type { Quad } from './vision/warp';
 
 // Sorting more prints than fit on the floor at once: each floor photo becomes
 // a pile (A, B, C...), each pile is stacked in date order, and the piles are
@@ -13,7 +15,15 @@ export interface Pile {
   /** Prints that couldn't be matched (set aside). */
   unmatched: number;
   createdAt: number;
+  /** Everything found in the floor photo, so the pile can be reopened. */
+  results?: SavedPrint[];
+  /** The floor photo is stored under photoKey(pile.id). */
+  hasPhoto?: boolean;
 }
+
+export interface SavedPrint { quad: Quad; candidates: Candidate[]; verdict: Verdict; chosen: string | null; confirmed: boolean }
+
+export const photoKey = (pileId: string) => `pile:${pileId}`;
 
 let piles: Pile[] = [];
 let loaded = false;
@@ -31,6 +41,10 @@ export async function loadPiles(): Promise<Pile[]> {
     emit();
   }
   return piles;
+}
+
+export function getPile(id: string): Pile | undefined {
+  return piles.find((p) => p.id === id);
 }
 
 export function usePiles(): Pile[] {
@@ -60,19 +74,21 @@ export async function startPile(): Promise<Pile> {
   return pile;
 }
 
-export async function updatePile(id: string, photoIds: string[], unmatched: number) {
-  piles = piles.map((p) => (p.id === id ? { ...p, photoIds, unmatched } : p));
+export async function updatePile(id: string, photoIds: string[], unmatched: number, extra: Partial<Pile> = {}) {
+  piles = piles.map((p) => (p.id === id ? { ...p, ...extra, photoIds, unmatched } : p));
   emit();
   await persist();
 }
 
 export async function removePile(id: string) {
   piles = piles.filter((p) => p.id !== id);
+  deleteExtraBlob(photoKey(id)).catch(() => {});
   emit();
   await persist();
 }
 
 export async function clearPiles() {
+  for (const p of piles) deleteExtraBlob(photoKey(p.id)).catch(() => {});
   piles = [];
   emit();
   await persist();

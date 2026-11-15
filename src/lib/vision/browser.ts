@@ -36,7 +36,7 @@ export function sigFromSource(src: Source): Sig {
 }
 
 /** Decode a file (HEIC too) into a raster for analysis. */
-export async function rasterFromFile(file: File, maxEdge: number): Promise<Raster> {
+export async function rasterFromFile(file: Blob, maxEdge: number): Promise<Raster> {
   const img = await decodeImage(file);
   try {
     return rasterFrom(img as Source, maxEdge);

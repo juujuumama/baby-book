@@ -404,3 +404,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
 .merge-left span.on { color: #fff; background: var(--navy); border-color: var(--navy); }
 .walk-sub.strong { color: var(--heart); margin-top: 2px; }
 .cand-score { font-size: 0.68rem; font-weight: 700; color: var(--muted); }
+
+.pile-open { flex: 1; display: flex; align-items: center; gap: 10px; border: 0; background: none; padding: 0; text-align: left; }
+.pile-go { color: var(--muted); font-size: 1.3rem; padding: 0 6px; }
+.reopen-row { justify-content: space-between; margin: 4px 0 8px; }
