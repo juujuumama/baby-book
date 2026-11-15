@@ -11,7 +11,7 @@ interface BabyBookDB extends DBSchema {
   /** Matching fingerprints, keyed by photo id. Rebuilt from thumbnails if missing. */
   sigs: { key: string; value: Sig };
   /** Feature points for matching prints, keyed by photo id. Rebuilt from thumbnails if missing. */
-  orbs: { key: string; value: PackedOrb };
+  orbs: { key: string; value: PackedOrb[] };
 }
 
 export type BlobKind = 'full' | 'thumb';
@@ -160,15 +160,16 @@ export async function deleteExtraBlob(key: string): Promise<void> {
   await (await db()).delete('blobs', key);
 }
 
-export async function getAllOrbs(): Promise<Map<string, PackedOrb>> {
+/** Feature points per photo, one set per size level. Entries from older versions (not arrays) are skipped so they get rebuilt. */
+export async function getAllOrbs(): Promise<Map<string, PackedOrb[]>> {
   const d = await db();
   const tx = d.transaction('orbs');
-  const out = new Map<string, PackedOrb>();
+  const out = new Map<string, PackedOrb[]>();
   let cur = await tx.store.openCursor();
-  while (cur) { out.set(cur.key, cur.value); cur = await cur.continue(); }
+  while (cur) { if (Array.isArray(cur.value)) out.set(cur.key, cur.value); cur = await cur.continue(); }
   return out;
 }
 
-export async function putOrb(id: string, orb: PackedOrb): Promise<void> {
-  await (await db()).put('orbs', orb, id);
+export async function putOrb(id: string, levels: PackedOrb[]): Promise<void> {
+  await (await db()).put('orbs', levels, id);
 }

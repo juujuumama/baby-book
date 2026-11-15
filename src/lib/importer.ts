@@ -1,6 +1,7 @@
 import { getPhotoByDedupeKey, hasDedupeKey, newId, putOrb, putSig, savePhoto, updatePhoto } from './db';
 import { rasterFrom, sigFromSource } from './vision/browser';
-import { computeOrb, packOrb } from './vision/orb';
+import { packOrb } from './vision/orb';
+import { photoOrbs } from './vision/matcher';
 import { dateFromName, readMeta } from './exif';
 import { closeDrawable, decodeImage, FULL_MAX_EDGE, imageSize, resizeToJpeg, THUMB_MAX_EDGE } from './image';
 import { localStringFromDate } from './dates';
@@ -100,7 +101,7 @@ async function importOne(file: File): Promise<'added' | 'dated' | 'duplicate'> {
     try {
       const source = src as CanvasImageSource & { width: number; height: number };
       await putSig(photo.id, sigFromSource(source));
-      await putOrb(photo.id, packOrb(computeOrb(rasterFrom(source, 480), 250)));
+      await putOrb(photo.id, photoOrbs(rasterFrom(source, 480)).map(packOrb));
     } catch { /* rebuilt later from the thumbnail */ }
     return 'added';
   } finally {

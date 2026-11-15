@@ -1,6 +1,7 @@
 // Browser glue: get pixels out of images and canvases for the vision code.
 import { getAllOrbs, getAllSigs, getBlob, putOrb, putSig } from '../db';
-import { computeOrb, packOrb, unpackOrb, type Orb } from './orb';
+import { packOrb, unpackOrb, type Orb } from './orb';
+import { photoOrbs } from './matcher';
 import { decodeImage, closeDrawable } from '../image';
 import type { Photo } from '../types';
 import { makeSig, type Sig } from './match';
@@ -59,12 +60,12 @@ export function rasterToCanvas(r: Raster): HTMLCanvasElement {
  * feature points), building whatever is missing from the thumbnails. Only
  * slow the first time; everything is kept on the device afterwards.
  */
-export async function loadMatchData(photos: Photo[], onProgress?: (done: number, total: number) => void): Promise<{ sigs: Map<string, Sig>; orbs: Map<string, Orb> }> {
+export async function loadMatchData(photos: Photo[], onProgress?: (done: number, total: number) => void): Promise<{ sigs: Map<string, Sig>; orbs: Map<string, Orb[]> }> {
   const [sigs, packed] = await Promise.all([getAllSigs(), getAllOrbs()]);
   const ids = new Set(photos.map((p) => p.id));
   for (const id of [...sigs.keys()]) if (!ids.has(id)) sigs.delete(id);
-  const orbs = new Map<string, Orb>();
-  for (const [id, p] of packed) if (ids.has(id)) orbs.set(id, unpackOrb(p));
+  const orbs = new Map<string, Orb[]>();
+  for (const [id, p] of packed) if (ids.has(id)) orbs.set(id, p.map(unpackOrb));
   const missing = photos.filter((p) => !sigs.has(p.id) || !orbs.has(p.id));
   let done = 0;
   onProgress?.(done, missing.length);
@@ -76,7 +77,7 @@ export async function loadMatchData(photos: Photo[], onProgress?: (done: number,
         const raster = rasterFrom(img as Source, 480);
         closeDrawable(img);
         if (!sigs.has(p.id)) { const sig = makeSig(raster); await putSig(p.id, sig); sigs.set(p.id, sig); }
-        if (!orbs.has(p.id)) { const orb = computeOrb(raster, 250); await putOrb(p.id, packOrb(orb)); orbs.set(p.id, orb); }
+        if (!orbs.has(p.id)) { const levels = photoOrbs(raster); await putOrb(p.id, levels.map(packOrb)); orbs.set(p.id, levels); }
       }
     } catch (err) {
       console.warn('Could not prepare', p.id, err);
