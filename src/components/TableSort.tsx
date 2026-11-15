@@ -9,6 +9,7 @@ import type { Raster } from '../lib/vision/raster';
 import type { Pt, Quad } from '../lib/vision/warp';
 import { patchPhotos, useStore } from '../store';
 import { OrderWalk } from './OrderWalk';
+import { removePile, updatePile, type Pile } from '../lib/sortSession';
 import { Sheet } from './Sheet';
 import { Thumb } from './Thumb';
 
@@ -42,8 +43,8 @@ function quadSize(q: Quad) {
   return Math.sqrt(Math.abs(((q[2].x - q[0].x) * (q[3].y - q[1].y) - (q[3].x - q[1].x) * (q[2].y - q[0].y)) / 2));
 }
 
-export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: {
-  file: File; sigs: Map<string, Sig>; positions: Map<string, PrintInfo>;
+export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inputs }: {
+  file: File; pile: Pile; sigs: Map<string, Sig>; positions: Map<string, PrintInfo>;
   onDone: () => void; onAnother: () => void; inputs: ComponentChildren;
 }) {
   const { photos } = useStore();
@@ -181,11 +182,19 @@ export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: 
   const sorted = found ? found.map((f, i) => ({ f, i })).filter(({ i }) => order.has(i)).sort((a, b) => order.get(a.i)! - order.get(b.i)!) : [];
   const flagged = found ? found.map((f, i) => ({ f, i })).filter(({ i }) => !order.has(i)) : [];
 
+  // Keep this floor photo's pile up to date (including any corrections).
+  const pileKey = sorted.map(({ f }) => f.chosen).join(',') + '|' + flagged.length;
+  useEffect(() => {
+    if (!found) return;
+    if (found.length === 0) { removePile(pile.id); return; }
+    updatePile(pile.id, sorted.map(({ f }) => f.chosen!), flagged.length);
+  }, [pileKey]);
+
   return (
     <div class="table-sort">
       <div class="row between">
         <button class="btn small ghost" onClick={onDone}>‹ Back</button>
-        {found && <span class="muted small">{found.length} prints found</span>}
+        {found && <span class="muted small">Pile {pile.label} · {found.length} prints found</span>}
         {found && found.length > 0 && <button class="btn small" onClick={() => setZoom(!zoom)}>{zoom ? 'Fit' : 'Zoom'}</button>}
       </div>
 
@@ -212,7 +221,7 @@ export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: 
       {found && found.length > 0 && (
         <>
           <button class="btn primary block walk-start" onClick={() => setWalking(true)}>Go through in order ›</button>
-          <p class="muted small center">Swipe through the prints one by one and stack them as you go. Or tap a print above to check its match.</p>
+          <p class="muted small center">Swipe through the prints one by one, putting each one on top of the last. When you're done, flip the stack over so #1 is on top: that's <strong>pile {pile.label}</strong>. Or tap a print above to check its match.</p>
           {flagged.length > 0 && (
             <section class="card flagged">
               <h3>Needs a look ({flagged.length})</h3>
@@ -246,14 +255,15 @@ export function TableSort({ file, sigs, positions, onDone, onAnother, inputs }: 
             </div>
           </section>
           <div class="row center-row">
-            <button class="btn primary" onClick={onAnother}>Sort another batch</button>
+            <button class="btn primary" onClick={onAnother}>Next floor photo (pile {String.fromCharCode(pile.label.charCodeAt(0) + 1)})</button>
+            <button class="btn" onClick={onDone}>Done: see all piles</button>
             <button class="btn" onClick={saveImage}>Save numbered photo</button>
           </div>
         </>
       )}
 
       {walking && base && found && (
-        <OrderWalk base={base} positions={positions} byId={byId} total={sorted.length}
+        <OrderWalk base={base} positions={positions} byId={byId} total={sorted.length} pileLabel={pile.label}
           steps={[...sorted.map(({ f, i }) => ({ quad: f.quad, print: f.print, n: order.get(i)!, photoId: f.chosen, index: i })),
             ...flagged.map(({ f, i }) => ({ quad: f.quad, print: f.print, n: null, photoId: null, index: i }))]}
           onClose={() => setWalking(false)} onFix={(i) => setOpen(i)} />

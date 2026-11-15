@@ -18,9 +18,9 @@ export interface WalkStep {
  * picked up off the floor and stacked. Each step shows where the print lies in
  * the photo, a close-up, and its label.
  */
-export function OrderWalk({ base, steps, positions, byId, total, onClose, onFix }: {
+export function OrderWalk({ base, steps, positions, byId, total, pileLabel, onClose, onFix }: {
   base: HTMLCanvasElement; steps: WalkStep[]; positions: Map<string, PrintInfo>; byId: Map<string, Photo>;
-  total: number; onClose: () => void; onFix: (index: number) => void;
+  total: number; pileLabel?: string; onClose: () => void; onFix: (index: number) => void;
 }) {
   const [k, setK] = useState(0);
   const overview = useRef<HTMLCanvasElement>(null);
@@ -131,7 +131,7 @@ export function OrderWalk({ base, steps, positions, byId, total, onClose, onFix 
       <div class="walk-top">
         <button class="icon-btn light" onClick={onClose} aria-label="Close">✕</button>
         <div class="walk-progress"><div class="walk-progress-fill" style={{ width: `${((k + 1) / steps.length) * 100}%` }} /></div>
-        <span class="walk-count">{k + 1} / {steps.length}</span>
+        <span class="walk-count">{pileLabel ? `Pile ${pileLabel} · ` : ''}{k + 1} / {steps.length}</span>
       </div>
 
       <canvas ref={overview} class="walk-overview" />
@@ -144,6 +144,7 @@ export function OrderWalk({ base, steps, positions, byId, total, onClose, onFix 
               <>
                 <div class="walk-title">{info ? fullLabel(info).split(' · #')[0] : 'No date yet'}</div>
                 <div class="walk-sub">{step.n === 1 ? 'First' : `Number ${step.n}`} of {total} in this batch{info ? ` · #${info.index} of ${info.total} that month` : ''}</div>
+                {last && step.n && pileLabel && <div class="walk-sub strong">Last one: flip the stack over so #1 is on top. That's pile {pileLabel}.</div>}
               </>
             ) : (
               <>
@@ -162,7 +163,7 @@ export function OrderWalk({ base, steps, positions, byId, total, onClose, onFix 
       <div class="walk-nav">
         <button class="btn light" disabled={k === 0} onClick={() => go(-1)}>‹ Back</button>
         <button class="btn light ghost small" onClick={() => onFix(step.index)}>{step.n ? 'Wrong photo?' : 'Pick photo'}</button>
-        {last ? <button class="btn primary-light" onClick={onClose}>Done ✓</button>
+        {last ? <button class="btn primary-light" onClick={onClose}>{pileLabel ? `Pile ${pileLabel} done ✓` : 'Done ✓'}</button>
           : <button class="btn primary-light" onClick={() => go(1)}>Next ›</button>}
       </div>
     </div>

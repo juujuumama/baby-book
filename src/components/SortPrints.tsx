@@ -7,12 +7,14 @@ import { useStore } from '../store';
 import { AddHelp } from './AddHelp';
 import { ImportButton } from './ImportButton';
 import { LiveSort } from './LiveSort';
+import { MergeWalk } from './MergeWalk';
+import { clearPiles, removePile, startPile, usePiles, type Pile } from '../lib/sortSession';
 import { TableSort } from './TableSort';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const fmtMonth = (taken: string) => `${MONTHS[+taken.slice(5, 7) - 1]} ${taken.slice(0, 4)}`;
 
-type Mode = { kind: 'home' } | { kind: 'table'; file: File } | { kind: 'live' };
+type Mode = { kind: 'home' } | { kind: 'table'; file: File; pile: Pile } | { kind: 'live' } | { kind: 'merge' };
 
 export function SortPrints() {
   const { photos, settings } = useStore();
@@ -34,12 +36,15 @@ export function SortPrints() {
   }, [photoKey]);
 
   const positions = useMemo(() => monthPositions(photos, birth), [photos, settings.birthDate]);
+  const piles = usePiles();
+  const byId = useMemo(() => new Map(photos.map((p) => [p.id, p])), [photos]);
+  const usedPiles = piles.filter((p) => p.photoIds.length > 0);
 
   const onFile = (e: Event) => {
     const el = e.target as HTMLInputElement;
     const file = el.files?.[0];
     el.value = '';
-    if (file) setMode({ kind: 'table', file });
+    if (file) startPile().then((pile) => setMode({ kind: 'table', file, pile }));
   };
 
   if (!photos.length) {
@@ -59,8 +64,11 @@ export function SortPrints() {
   }
 
   if (mode.kind === 'table' && sigs) {
-    return <TableSort file={mode.file} sigs={sigs} positions={positions} onDone={() => setMode({ kind: 'home' })}
+    return <TableSort key={mode.pile.id} file={mode.file} pile={mode.pile} sigs={sigs} positions={positions} onDone={() => setMode({ kind: 'home' })}
       onAnother={() => takeInput.current?.click()} inputs={inputs()} />;
+  }
+  if (mode.kind === 'merge') {
+    return <MergeWalk piles={usedPiles} positions={positions} byId={byId} onClose={() => setMode({ kind: 'home' })} />;
   }
   if (mode.kind === 'live' && sigs) {
     return <LiveSort sigs={sigs} positions={positions} onClose={() => setMode({ kind: 'home' })} />;
@@ -97,6 +105,27 @@ export function SortPrints() {
           </>
         )}
       </div>
+
+      {usedPiles.length > 0 && (
+        <div class="card piles">
+          <h3>Your piles so far</h3>
+          <p class="muted small">Each floor photo becomes a pile stacked in date order. When every print is sorted into a pile, merge them into one stack.</p>
+          <ul class="pile-list">
+            {usedPiles.map((p) => (
+              <li key={p.id}>
+                <span class="pile-badge">{p.label}</span>
+                <span class="pile-text">{p.photoIds.length} prints{p.unmatched ? ` · ${p.unmatched} set aside` : ''}</span>
+                <button class="link-btn" onClick={() => { if (confirm(`Forget pile ${p.label}?`)) removePile(p.id); }}>Remove</button>
+              </li>
+            ))}
+          </ul>
+          <div class="row">
+            {usedPiles.length > 1 && <button class="btn primary" onClick={() => setMode({ kind: 'merge' })}>Merge {usedPiles.length} piles into one stack ›</button>}
+            <button class="btn ghost small" onClick={() => { if (confirm('Start over and forget all piles? (Your photos stay.)')) clearPiles(); }}>Start over</button>
+          </div>
+          <p class="muted small">Next batch: pick up the sorted pile, lay out more prints, and take another photo below.</p>
+        </div>
+      )}
 
       <div class="mode-cards">
         <div class="card mode-card">
