@@ -17,7 +17,7 @@ async function startImport(files: File[]) {
   requestPersist();
   controller = new AbortController();
   let lastReload = 0;
-  emit({ progress: { done: 0, total: files.length, added: 0, duplicates: 0, failed: [] }, finished: false });
+  emit({ progress: { done: 0, total: files.length, added: 0, duplicates: 0, dated: 0, failed: [] }, finished: false });
   const result = await importFiles(files, (p) => {
     if (current) emit({ ...current, progress: p });
     // Let new photos appear in the timeline as they arrive.
@@ -59,6 +59,7 @@ export function ImportSheet() {
       <p class="muted center">
         {progress.done} of {progress.total}
         {progress.added ? ` · ${progress.added} added` : ''}
+        {progress.dated ? ` · ${progress.dated} dates found` : ''}
         {progress.duplicates ? ` · ${progress.duplicates} already here` : ''}
       </p>
       {!finished && <p class="muted center small">Keep this screen open. Everything stays on this device.</p>}

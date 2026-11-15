@@ -1,4 +1,4 @@
-import { hasDedupeKey, newId, putSig, savePhoto } from './db';
+import { getPhotoByDedupeKey, hasDedupeKey, newId, putSig, savePhoto, updatePhoto } from './db';
 import { sigFromSource } from './vision/browser';
 import { dateFromName, readMeta } from './exif';
 import { closeDrawable, decodeImage, FULL_MAX_EDGE, imageSize, resizeToJpeg, THUMB_MAX_EDGE } from './image';
@@ -10,6 +10,8 @@ export interface ImportProgress {
   total: number;
   added: number;
   duplicates: number;
+  /** Photos already in the book whose missing date was found this time. */
+  dated: number;
   failed: string[];
   current?: string;
 }
@@ -21,15 +23,16 @@ const yieldToUI = () => new Promise((r) => setTimeout(r, 0));
  * image memory quickly when decoding several 12 MP photos at once.
  */
 export async function importFiles(files: File[], onProgress: (p: ImportProgress) => void, signal?: AbortSignal): Promise<ImportProgress> {
-  const p: ImportProgress = { done: 0, total: files.length, added: 0, duplicates: 0, failed: [] };
+  const p: ImportProgress = { done: 0, total: files.length, added: 0, duplicates: 0, dated: 0, failed: [] };
   onProgress({ ...p });
   for (const file of files) {
     if (signal?.aborted) break;
     p.current = file.name;
     onProgress({ ...p });
     try {
-      const added = await importOne(file);
-      if (added) p.added++;
+      const r = await importOne(file);
+      if (r === 'added') p.added++;
+      else if (r === 'dated') p.dated++;
       else p.duplicates++;
     } catch (err) {
       if ((err as DOMException)?.name === 'QuotaExceededError') {
@@ -49,18 +52,28 @@ export async function importFiles(files: File[], onProgress: (p: ImportProgress)
   return p;
 }
 
-async function importOne(file: File): Promise<boolean> {
+async function importOne(file: File): Promise<'added' | 'dated' | 'duplicate'> {
   const meta = await readMeta(file);
+  // Added before without a date (the same file again)? Fill the date in now.
+  const fileKey = `f:${file.name}|${file.size}`;
+  const earlier = await getPhotoByDedupeKey(fileKey);
+  if (earlier) {
+    if (!earlier.taken && meta.taken) {
+      await updatePhoto(earlier.id, { taken: meta.taken, dateSource: 'exif', camera: earlier.camera ?? meta.camera });
+      return 'dated';
+    }
+    return 'duplicate';
+  }
   const src = await decodeImage(file);
   const { w: origWidth, h: origHeight } = imageSize(src);
 
   // Same moment + same shape = same photo, even if one copy is HEIC and the
   // other a JPEG the phone converted.
   const dims = [origWidth, origHeight].sort((a, b) => a - b).join('x');
-  const dedupeKey = meta.taken ? `t:${meta.taken}|${meta.subSec ?? ''}|${dims}` : `f:${file.name}|${file.size}`;
+  const dedupeKey = meta.taken ? `t:${meta.taken}|${meta.subSec ?? ''}|${dims}` : fileKey;
   if (await hasDedupeKey(dedupeKey)) {
     closeDrawable(src);
-    return false;
+    return 'duplicate';
   }
 
   try {
@@ -86,7 +99,7 @@ async function importOne(file: File): Promise<boolean> {
     try {
       await putSig(photo.id, sigFromSource(src as CanvasImageSource & { width: number; height: number }));
     } catch { /* rebuilt later from the thumbnail */ }
-    return true;
+    return 'added';
   } finally {
     closeDrawable(src);
   }

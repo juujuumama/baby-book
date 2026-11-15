@@ -403,3 +403,4 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
 .merge-left span { font-size: 0.78rem; font-weight: 800; color: var(--muted); background: #fff; border: 1px solid var(--line); border-radius: 99px; padding: 2px 10px; }
 .merge-left span.on { color: #fff; background: var(--navy); border-color: var(--navy); }
 .walk-sub.strong { color: var(--heart); margin-top: 2px; }
+.cand-score { font-size: 0.68rem; font-weight: 700; color: var(--muted); }

@@ -570,28 +570,52 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
   const blobs = separate(mask, w, h, unit * 3, minArea);
   const fits = blobs.map(fitBlob);
   // Typical print size, from blobs that are clearly single prints. Prints laid
-  // edge to edge can fuse into neat rectangles of two, so take a low
-  // percentile first, then the median of blobs near that size.
+  // edge to edge can fuse into neat rectangles of two, so start from a low
+  // percentile. When the phone is held at an angle, prints nearer the camera
+  // look bigger, so size is modelled as varying across the photo.
+  const centre = (b: Blob) => {
+    let sx = 0, sy = 0;
+    for (const i of b.pixels) { sx += i % w; sy += Math.floor(i / w); }
+    return { x: sx / b.pixels.length, y: sy / b.pixels.length };
+  };
+  const centres = blobs.map(centre);
   const goodIdx = blobs.map((_, i) => i).filter((i) => fits[i]?.good && !blobs[i].touchesEdge);
   const goodAreas = goodIdx.map((i) => blobs[i].area).sort((a, b) => a - b);
   const rough0 = goodAreas.length ? goodAreas[Math.floor(goodAreas.length * 0.3)] : 0;
-  const singles = goodIdx.filter((i) => blobs[i].area > rough0 * 0.7 && blobs[i].area < rough0 * 1.45);
   const med = (v: number[]) => [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)];
-  const typical = singles.length ? med(singles.map((i) => blobs[i].area)) : 0;
-  // Typical print shape, for unpacking clusters of touching prints.
+  // scale(x, y): how big a print looks at that spot, relative to the median.
+  let coef = [1, 0, 0];
+  const scaleAt = (p: { x: number; y: number }) => Math.min(1.8, Math.max(0.55, coef[0] + coef[1] * (p.x / w - 0.5) + coef[2] * (p.y / h - 0.5)));
+  let singles = goodIdx.filter((i) => blobs[i].area > rough0 * 0.7 && blobs[i].area < rough0 * 1.45);
+  let typical = singles.length ? med(singles.map((i) => blobs[i].area)) : 0;
+  for (let pass = 0; pass < 2 && singles.length >= 6; pass++) {
+    // Least squares: sqrt(area / typical) ~ a + b·x + c·y.
+    const rows = singles.map((i) => [1, centres[i].x / w - 0.5, centres[i].y / h - 0.5, Math.sqrt(blobs[i].area / typical)]);
+    const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], B = [0, 0, 0];
+    for (const r of rows) for (let a = 0; a < 3; a++) { B[a] += r[a] * r[3]; for (let c = 0; c < 3; c++) A[a][c] += r[a] * r[c]; }
+    const det = (m: number[][]) => m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    const D = det(A);
+    if (Math.abs(D) < 1e-9) break;
+    coef = [0, 1, 2].map((k) => det(A.map((row, r) => row.map((v, c) => (c === k ? B[r] : v)))) / D);
+    singles = goodIdx.filter((i) => { const loc = typical * scaleAt(centres[i]) ** 2; return blobs[i].area > loc * 0.7 && blobs[i].area < loc * 1.45; });
+  }
+  const localTypical = (i: number) => typical * scaleAt(centres[i]) ** 2;
+  // Typical print shape (at scale 1), for unpacking clusters of touching prints.
   const sides = singles.map((i) => {
     const q = fits[i]!.rough, e0 = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y), e1 = Math.hypot(q[2].x - q[1].x, q[2].y - q[1].y);
-    return [Math.max(e0, e1), Math.min(e0, e1)];
+    const k = scaleAt(centres[i]);
+    return [Math.max(e0, e1) / k, Math.min(e0, e1) / k];
   });
   const L = sides.length ? med(sides.map((s2) => s2[0])) : 0, S = sides.length ? med(sides.map((s2) => s2[1])) : 0;
 
   blobs.forEach((b, i) => {
     const f = fits[i];
     if (!f) return;
-    const big = typical > 0 && b.area > typical * 1.15;
-    const oversized = typical > 0 && b.area > typical * 1.6;
+    const loc = typical > 0 ? localTypical(i) : 0, k = typical > 0 ? scaleAt(centres[i]) : 1;
+    const big = loc > 0 && b.area > loc * 1.15;
+    const oversized = loc > 0 && b.area > loc * 1.6;
     if ((!f.good && big || oversized) && L > 0) {
-      const quads = packCluster(b, w, h, L, S, typical);
+      const quads = packCluster(b, w, h, L * k, S * k, loc);
       if (quads.length >= 1) {
         // Cluster pieces keep their packed outline: snapping would reach into the neighbour.
         for (const q of quads) out.push({ quad: q, fill: 1, area: polygonArea(q), doubtful: false, touchesEdge: false });
@@ -600,7 +624,7 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
     }
     const q = normalizeQuad(refineQuad(f.rough, w, h, grad, isBg));
     const qa = polygonArea(q);
-    const doubtful = !f.good || !cornerAnglesOk(q) || b.touchesEdge || (typical > 0 && (qa > typical * 1.8 || qa < typical * 0.4));
+    const doubtful = !f.good || !cornerAnglesOk(q) || b.touchesEdge || (loc > 0 && (qa > loc * 1.8 || qa < loc * 0.4));
     out.push({ quad: q, fill: f.fill, area: qa, doubtful, touchesEdge: b.touchesEdge });
   });
   return out.sort((a, b) => (a.quad[0].y + a.quad[2].y) - (b.quad[0].y + b.quad[2].y) || a.quad[0].x - b.quad[0].x);

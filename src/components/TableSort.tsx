@@ -304,6 +304,7 @@ export function PrintDetail({ f, positions, byId, onChoose, onClose }: {
             <button key={c.id} class={`cand ${f.chosen === c.id ? 'on' : ''}`} onClick={() => onChoose(c.id)}>
               <Thumb photo={photo} />
               <span class="cand-label">{info ? fullLabel(info) : 'No date'}</span>
+              <span class="cand-score">{Math.round(Math.max(0, c.score) * 100)}% match</span>
             </button>
           );
         })}

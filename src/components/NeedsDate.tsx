@@ -10,6 +10,12 @@ export function NeedsDate() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState(false);
   const withNameDate = undated.filter((p) => p.nameDate);
+  // File dates are only useful when they're not just the day the photo was added.
+  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const withFileDate = undated.filter((p) => p.fileDate && p.fileDate.slice(0, 10) !== day(p.addedAt));
+  const fileDaysVary = new Set(withFileDate.map((p) => p.fileDate!.slice(0, 10))).size >= 5;
+  const types = new Map<string, number>();
+  for (const p of undated) { const ext = (/\.([a-z0-9]+)$/i.exec(p.fileName)?.[1] ?? 'other').toUpperCase(); types.set(ext, (types.get(ext) ?? 0) + 1); }
 
   const toggle = (id: string) => {
     const s = new Set(selected);
@@ -33,6 +39,13 @@ export function NeedsDate() {
       <div class="card intro">
         <h2>Needs a date</h2>
         <p class="muted">These photos didn't say when they were taken. Tap to select one or more, then set the date.</p>
+        <p class="muted small">By file type: {[...types].sort((a, b) => b[1] - a[1]).map(([t, n]) => `${n} ${t}`).join(' · ')}</p>
+        {withFileDate.length >= 10 && fileDaysVary && (
+          <button class="btn small" onClick={async () => {
+            if (!confirm(`Use the file's own date for ${withFileDate.length} photos? These are usually right but can be the day a photo was saved, so check a few afterwards.`)) return;
+            for (const p of withFileDate) await patchPhotos([p.id], { taken: p.fileDate, dateSource: 'manual' });
+          }}>Use the files' dates ({withFileDate.length})</button>
+        )}
         {withNameDate.length > 0 && (
           <button class="btn small" onClick={async () => {
             for (const p of withNameDate) await patchPhotos([p.id], { taken: p.nameDate, dateSource: 'manual' });

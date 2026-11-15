@@ -42,6 +42,10 @@ export async function getPhoto(id: string): Promise<Photo | undefined> {
   return (await db()).get('photos', id);
 }
 
+export async function getPhotoByDedupeKey(key: string): Promise<Photo | undefined> {
+  return (await db()).getFromIndex('photos', 'dedupeKey', key);
+}
+
 export async function hasDedupeKey(key: string): Promise<boolean> {
   return (await (await db()).getKeyFromIndex('photos', 'dedupeKey', key)) !== undefined;
 }
