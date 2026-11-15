@@ -86,8 +86,15 @@ function backgroundPalette(r: Raster, k = 8, share = 0.05): [number, number, num
     if (it === 7) {
       // Prints that reach the edge of the shot show up on the border too; keep
       // only colours that cover a good share of it (the table itself).
-      const big = kept.map((t, i) => [t[3], i] as const).filter(([n]) => n > samples.length * share).map(([, i]) => centers[i]);
-      if (big.length) centers = big;
+      const big = kept.map((t, i) => [t[3], i] as const).filter(([n]) => n > samples.length * share);
+      if (big.length) {
+        // The edge of the photo can also catch other things (cabinets, a rug,
+        // a dark baseboard). Keep the main floor colour and shades near it.
+        const [, mainI] = big.reduce((a, b) => (b[0] > a[0] ? b : a));
+        const main = centers[mainI];
+        const near = (c: number[]) => Math.sqrt((c[0] - main[0]) ** 2 + 2.5 * ((c[1] - main[1]) ** 2 + (c[2] - main[2]) ** 2)) < 75;
+        centers = big.map(([, i]) => centers[i]).filter(near);
+      }
     }
   }
   return centers;
@@ -286,6 +293,46 @@ function cornerAnglesOk(q: Quad): boolean {
   return true;
 }
 
+/** Colour gradient: per pixel, the channel that changes most (photos meeting edge to edge often differ in colour more than brightness). */
+function colorSobel(r: Raster): { gx: Float32Array; gy: Float32Array } {
+  const { w, h, data } = r;
+  const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x;
+    let bx = 0, by = 0, bm = -1;
+    for (let c = 0; c < 3; c++) {
+      const p = (k: number) => data[k * 4 + c];
+      const sx = (p(i - w + 1) + 2 * p(i + 1) + p(i + w + 1)) - (p(i - w - 1) + 2 * p(i - 1) + p(i + w - 1));
+      const sy = (p(i + w - 1) + 2 * p(i + w) + p(i + w + 1)) - (p(i - w - 1) + 2 * p(i - w) + p(i - w + 1));
+      const mm = sx * sx + sy * sy;
+      if (mm > bm) { bm = mm; bx = sx; by = sy; }
+    }
+    gx[i] = bx; gy[i] = by;
+  }
+  return { gx, gy };
+}
+
+function boxMean(v: Float32Array, w: number, h: number, r: number): Float32Array {
+  const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let s = 0;
+    for (let x = -r; x <= r; x++) s += v[y * w + Math.min(w - 1, Math.max(0, x))];
+    for (let x = 0; x < w; x++) {
+      tmp[y * w + x] = s / (2 * r + 1);
+      s += v[y * w + Math.min(w - 1, x + r + 1)] - v[y * w + Math.max(0, x - r)];
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let y = -r; y <= r; y++) s += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = s / (2 * r + 1);
+      s += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x];
+    }
+  }
+  return out;
+}
+
 function sobel(r: Raster): { gx: Float32Array; gy: Float32Array } {
   const { w, h, data } = r;
   const g = new Float32Array(w * h);
@@ -435,23 +482,33 @@ function fitBlob(b: Blob): Fit | null {
 }
 
 /**
- * Prints that touch or overlap merge into one blob. Since a batch is usually
- * all one print size (learned from the prints lying on their own), fill the
- * blob greedily with print-sized rectangles: each must sit inside the blob,
- * cover new ground, and line up with the blob's outer edges.
+ * Prints that touch or overlap merge into one blob. A batch is usually all one
+ * print size (learned from the prints lying on their own, and scaled for how
+ * far each spot is from the camera). Every print-sized rectangle that fits in
+ * the blob is scored by how well its four sides sit on real edges (one photo
+ * ending and the next beginning, or print meeting floor); the best
+ * non-overlapping set wins.
  */
-function packCluster(b: Blob, w: number, h: number, L: number, S: number, typical: number): Quad[] {
+function packCluster(
+  b: Blob, w: number, h: number, L: number, S: number,
+  scaleAt: (p: { x: number; y: number }) => number, maxPrints: number,
+  grad: { gx: Float32Array; gy: Float32Array }, gNorm: number,
+): Quad[] {
   let x0 = w, y0 = h, x1 = 0, y1 = 0;
   for (const i of b.pixels) { const x = i % w, y = (i - x) / w; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
   const m = new Uint8Array(bw * bh);
   for (const i of b.pixels) { const x = i % w, y = (i - x) / w; m[(y - y0) * bw + (x - x0)] = 1; }
-  const covered = new Uint8Array(bw * bh);
-  const at = (x: number, y: number) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < bw && yi < bh ? m[yi * bw + xi] : 0; };
-  const cov = (x: number, y: number) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < bw && yi < bh ? covered[yi * bw + xi] : 1; };
+  const inMask = (x: number, y: number) => { const xi = Math.round(x) - x0, yi = Math.round(y) - y0; return xi >= 0 && yi >= 0 && xi < bw && yi < bh ? m[yi * bw + xi] : 0; };
+  const edgeAt = (x: number, y: number, nx: number, ny: number) => {
+    const xi = Math.round(x), yi = Math.round(y);
+    if (xi < 1 || yi < 1 || xi >= w - 1 || yi >= h - 1) return 0;
+    const i = yi * w + xi;
+    return Math.abs(grad.gx[i] * nx + grad.gy[i] * ny);
+  };
 
-  // Candidate angles: the cluster's own rectangle plus its long straight sides.
-  const hull = convexHull(b.pts.map((p) => ({ x: p.x - x0, y: p.y - y0 })));
+  // Angles: the cluster's own rectangle plus its long straight sides.
+  const hull = convexHull(b.pts);
   const angles: number[] = [];
   const addAngle = (a: number) => {
     a = ((a % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2);
@@ -459,69 +516,98 @@ function packCluster(b: Blob, w: number, h: number, L: number, S: number, typica
   };
   const r0 = minAreaRect(hull);
   if (r0) addAngle(Math.atan2(r0[1].y - r0[0].y, r0[1].x - r0[0].x));
-  const edges = hull.map((p, i) => { const q = hull[(i + 1) % hull.length]; return { a: Math.atan2(q.y - p.y, q.x - p.x), len: Math.hypot(q.x - p.x, q.y - p.y) }; })
-    .filter((e) => e.len > S * 0.5).sort((a, b2) => b2.len - a.len);
-  for (const e of edges) { if (angles.length >= 4) break; addAngle(e.a); }
+  hull.map((p, i) => { const q = hull[(i + 1) % hull.length]; return { a: Math.atan2(q.y - p.y, q.x - p.x), len: Math.hypot(q.x - p.x, q.y - p.y) }; })
+    .filter((e) => e.len > S * 0.8).sort((a, c) => c.len - a.len).forEach((e) => { if (angles.length < 3) addAngle(e.a); });
 
-  const quads: Quad[] = [];
-  const IN = 10, JN = 7, PER = 28;
   type Place = { cx: number; cy: number; a: number; lw: number; lh: number; score: number };
+  const IN = 8, JN = 6, PER = 12; // samples per side
   const evaluate = (cx: number, cy: number, a: number, lw: number, lh: number): Place | null => {
     const ux = Math.cos(a), uy = Math.sin(a), vx = -uy, vy = ux;
     const P = (u: number, v: number) => [cx + ux * u + vx * v, cy + uy * u + vy * v] as const;
-    // Quick reject on the corners.
-    for (const [su, sv] of [[-0.42, -0.42], [0.42, -0.42], [0.42, 0.42], [-0.42, 0.42]]) { const [x, y] = P(su * lw, sv * lh); if (!at(x, y)) return null; }
-    let inside = 0, fresh = 0;
+    // Mostly over the cluster (pale parts of a print can drop out of the mask,
+    // so this is a loose check; the edges decide).
+    let corners = 0;
+    for (const [su, sv] of [[-0.4, -0.4], [0.4, -0.4], [0.4, 0.4], [-0.4, 0.4]]) { const [x, y] = P(su * lw, sv * lh); if (inMask(x, y)) corners++; }
+    if (corners < 2) return null;
+    let inside = 0;
     for (let j = 0; j < JN; j++) for (let i = 0; i < IN; i++) {
-      const [x, y] = P(((i + 0.5) / IN - 0.5) * lw * 0.94, ((j + 0.5) / JN - 0.5) * lh * 0.94);
-      if (at(x, y)) { inside++; if (!cov(x, y)) fresh++; }
+      const [x, y] = P(((i + 0.5) / IN - 0.5) * lw * 0.9, ((j + 0.5) / JN - 0.5) * lh * 0.9);
+      if (inMask(x, y)) inside++;
     }
-    const n = IN * JN;
-    if (inside < n * 0.94 || fresh < n * 0.5) return null;
-    let outside = 0;
-    for (let k = 0; k < PER; k++) {
-      const t = (k + 0.5) / PER * 4, side = Math.floor(t), f = t - side - 0.5;
-      const [u, v] = side === 0 ? [f * lw, -lh / 2 - 3] : side === 1 ? [lw / 2 + 3, f * lh] : side === 2 ? [-f * lw, lh / 2 + 3] : [-lw / 2 - 3, -f * lh];
-      const [x, y] = P(u, v);
-      if (!at(x, y)) outside++;
+    if (inside < IN * JN * 0.6) return null;
+    // Edge support, side by side: what fraction of each side sits on a real
+    // edge (checking the line and a pixel or two either side). All four sides
+    // must be supported, so they're combined with a geometric mean: a box
+    // shifted half a print along has two sides in mid-photo and scores low.
+    const sides: [number, number, number, number, number, number][] = [
+      // start (u, v), along (du, dv), outward normal (nu, nv)
+      [-lw / 2, -lh / 2, lw, 0, 0, -1], [lw / 2, -lh / 2, 0, lh, 1, 0], [lw / 2, lh / 2, -lw, 0, 0, 1], [-lw / 2, lh / 2, 0, -lh, -1, 0],
+    ];
+    let logSum = 0, outside = 0, n = 0;
+    for (const [u0, v0, du, dv, nu, nv] of sides) {
+      const nx = ux * nu + vx * nv, ny = uy * nu + vy * nv;
+      let hits = 0;
+      for (let k = 0; k < PER; k++) {
+        const t = (k + 0.5) / PER;
+        const [x, y] = P(u0 + du * t, v0 + dv * t);
+        let e = 0;
+        for (const o of [-2, -1, 0, 1, 2]) e = Math.max(e, edgeAt(x + nx * o, y + ny * o, nx, ny));
+        hits += Math.min(1, e / gNorm);
+        if (!inMask(x + nx * 4, y + ny * 4)) outside++;
+        n++;
+      }
+      logSum += Math.log(0.05 + hits / PER);
     }
-    return { cx, cy, a, lw, lh, score: outside / PER + 0.3 * fresh / n };
+    const fillFrac = inside / (IN * JN);
+    return { cx, cy, a, lw, lh, score: Math.exp(logSum / 4) + 0.35 * outside / n + 0.8 * fillFrac };
   };
 
-  // Never place more prints than the cluster's area can hold.
-  const maxPrints = Math.max(1, Math.ceil((b.area / typical) * 1.1));
-  for (let iter = 0; iter < maxPrints; iter++) {
-    let remaining = 0;
-    for (let i = 0; i < m.length; i++) if (m[i] && !covered[i]) remaining++;
-    if (remaining < typical * 0.35) break;
-    let best: Place | null = null;
-    const step = Math.max(2, Math.round(S / 25));
-    for (const a of angles) for (const [lw, lh] of [[L, S], [S, L]]) {
-      for (let cy = 0; cy < bh; cy += step) for (let cx = 0; cx < bw; cx += step) {
-        if (!m[cy * bw + cx]) continue;
-        const pl = evaluate(cx, cy, a, lw, lh);
-        if (pl && (!best || pl.score > best.score)) best = pl;
+  // Score every placement once.
+  const cands: Place[] = [];
+  for (const a of angles) {
+    for (let cy = y0; cy <= y1; ) {
+      const k0 = scaleAt({ x: (x0 + x1) / 2, y: cy });
+      const step = Math.max(2, Math.round((S * k0) / 14));
+      for (let cx = x0; cx <= x1; cx += step) {
+        const k = scaleAt({ x: cx, y: cy });
+        // The size estimate can be off when few prints lie on their own, so try a few.
+        for (const f of [0.88, 1, 1.12]) for (const [lw, lh] of [[L * k * f, S * k * f], [S * k * f, L * k * f]]) {
+          const pl = evaluate(cx, cy, a, lw, lh);
+          if (pl) cands.push(pl);
+        }
       }
+      cy += step;
     }
-    if (!best) break;
-    // Polish: small shifts, turns and size changes.
-    for (let pass = 0; pass < 2; pass++) {
-      const b0: Place = best;
-      for (const dx of [-2, -1, 0, 1, 2]) for (const dy of [-2, -1, 0, 1, 2]) for (const da of [-0.02, 0, 0.02]) for (const sc of [0.97, 1, 1.03]) {
-        const pl = evaluate(b0.cx + dx, b0.cy + dy, b0.a + da, b0.lw * sc, b0.lh * sc);
-        if (pl && pl.score > best.score + 1e-6) best = pl;
-      }
-    }
-    const { cx, cy, a, lw, lh } = best;
-    const ux = Math.cos(a), uy = Math.sin(a);
-    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
-      const dx = x - cx, dy = y - cy;
-      if (Math.abs(dx * ux + dy * uy) <= lw / 2 && Math.abs(-dx * uy + dy * ux) <= lh / 2) covered[y * bw + x] = 1;
-    }
-    const corner = (u: number, v: number): Pt => ({ x: x0 + cx + ux * u - uy * v, y: y0 + cy + uy * u + ux * v });
-    quads.push(normalizeQuad([corner(-lw / 2, -lh / 2), corner(lw / 2, -lh / 2), corner(lw / 2, lh / 2), corner(-lw / 2, lh / 2)]));
   }
-  return quads;
+  cands.sort((p, q) => q.score - p.score);
+
+  // Greedily keep the best placements that don't overlap ones already kept.
+  const kept: Place[] = [];
+  const overlaps = (p: Place, q: Place) => {
+    // Cheap test: centre distance compared with the sizes along both axes.
+    const ux = Math.cos(q.a), uy = Math.sin(q.a);
+    const dx = p.cx - q.cx, dy = p.cy - q.cy;
+    const du = Math.abs(dx * ux + dy * uy), dv = Math.abs(-dx * uy + dy * ux);
+    return du < (p.lw + q.lw) / 2 * 0.85 && dv < (p.lh + q.lh) / 2 * 0.85;
+  };
+  const best = cands[0]?.score ?? 0;
+  for (const c of cands) {
+    if (kept.length >= maxPrints || c.score < best * 0.6) break;
+    if (kept.some((k) => overlaps(c, k))) continue;
+    // Polish: small shifts, turns and size changes.
+    let p = c;
+    for (const dx of [-2, -1, 0, 1, 2]) for (const dy of [-2, -1, 0, 1, 2]) for (const da of [-0.025, 0, 0.025]) for (const sc of [0.96, 1, 1.04]) {
+      const q = evaluate(c.cx + dx, c.cy + dy, c.a + da, c.lw * sc, c.lh * sc);
+      if (q && q.score > p.score) p = q;
+    }
+    if (kept.some((k) => overlaps(p, k))) continue;
+    kept.push(p);
+  }
+  return kept.map(({ cx, cy, a, lw, lh }) => {
+    const ux = Math.cos(a), uy = Math.sin(a);
+    const corner = (u: number, v: number): Pt => ({ x: cx + ux * u - uy * v, y: cy + uy * u + ux * v });
+    return normalizeQuad([corner(-lw / 2, -lh / 2), corner(lw / 2, -lh / 2), corner(lw / 2, lh / 2), corner(-lw / 2, lh / 2)]);
+  });
 }
 
 export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection[] {
@@ -556,7 +642,30 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
   let mask: Uint8Array = new Uint8Array(w * h);
   for (let i = 0; i < mask.length; i++) mask[i] = dist[i] > t ? 1 : 0;
 
+  // Detail: photos are full of fine detail (faces, fabric, toys), floors are
+  // smooth. Where a print's colours blend into a light floor, detail still
+  // gives it away. Measured as local average gradient, compared with the
+  // floor's own (from the border).
   const grad = sobel(img);
+  {
+    const mag = new Float32Array(w * h);
+    for (let i = 0; i < mag.length; i++) mag[i] = Math.abs(grad.gx[i]) + Math.abs(grad.gy[i]);
+    const rd = Math.max(2, Math.round(Math.max(w, h) / 350));
+    const det = boxMean(mag, w, h, rd);
+    const bd: number[] = [];
+    for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) {
+      if (x < band || x >= w - band || y < band || y >= h - band) bd.push(det[y * w + x]);
+    }
+    bd.sort((a, b) => a - b);
+    const dT = Math.max(30, (bd[Math.floor(bd.length * 0.5)] ?? 0) * 3);
+    // The averaging window spills past each print's edge; shrink it back so
+    // the narrow gaps between prints stay open.
+    let detMask: Uint8Array = new Uint8Array(w * h);
+    for (let i = 0; i < detMask.length; i++) detMask[i] = det[i] > dT ? 1 : 0;
+    detMask = morph(detMask, w, h, rd + 2, false);
+    for (let i = 0; i < mask.length; i++) mask[i] |= detMask[i];
+  }
+
   const unit = Math.max(1, Math.round(Math.max(w, h) / 500));
   // No gap closing: prints laid close together are separated by only a few
   // pixels of floor, and closing would weld them into one blob.
@@ -608,14 +717,17 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
   });
   const L = sides.length ? med(sides.map((s2) => s2[0])) : 0, S = sides.length ? med(sides.map((s2) => s2[1])) : 0;
 
+  let cgrad: { gx: Float32Array; gy: Float32Array } | null = null;
+  // A strong edge, for scoring how well a rectangle's sides sit on real borders.
+  const gNorm = 160;
   blobs.forEach((b, i) => {
     const f = fits[i];
     if (!f) return;
-    const loc = typical > 0 ? localTypical(i) : 0, k = typical > 0 ? scaleAt(centres[i]) : 1;
+    const loc = typical > 0 ? localTypical(i) : 0;
     const big = loc > 0 && b.area > loc * 1.15;
     const oversized = loc > 0 && b.area > loc * 1.6;
     if ((!f.good && big || oversized) && L > 0) {
-      const quads = packCluster(b, w, h, L * k, S * k, loc);
+      const quads = packCluster(b, w, h, L, S, scaleAt, Math.max(1, Math.ceil((b.area / loc) * 1.15)), cgrad ??= colorSobel(img), gNorm);
       if (quads.length >= 1) {
         // Cluster pieces keep their packed outline: snapping would reach into the neighbour.
         for (const q of quads) out.push({ quad: q, fill: 1, area: polygonArea(q), doubtful: false, touchesEdge: false });
@@ -627,5 +739,11 @@ export function detectPrints(input: Raster, opts: DetectOptions = {}): Detection
     const doubtful = !f.good || !cornerAnglesOk(q) || b.touchesEdge || (loc > 0 && (qa > loc * 1.8 || qa < loc * 0.4));
     out.push({ quad: q, fill: f.fill, area: qa, doubtful, touchesEdge: b.touchesEdge });
   });
+  // Anything reaching the edge of the photo may be cut off (or not a print at
+  // all, like a cabinet along the top), so it's never trusted outright.
+  const margin = Math.max(2, Math.round(Math.min(w, h) * 0.01));
+  for (const d of out) {
+    if (d.quad.some((p) => p.x < margin || p.y < margin || p.x > w - margin || p.y > h - margin)) { d.doubtful = true; d.touchesEdge = true; }
+  }
   return out.sort((a, b) => (a.quad[0].y + a.quad[2].y) - (b.quad[0].y + b.quad[2].y) || a.quad[0].x - b.quad[0].x);
 }

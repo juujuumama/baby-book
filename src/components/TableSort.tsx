@@ -4,7 +4,9 @@ import { saveFiles } from '../lib/backup';
 import { byTakenIds, fullLabel, sameMomentFn, shortLabel, type PrintInfo } from '../lib/printLabels';
 import { rasterFromFile, rasterToCanvas } from '../lib/vision/browser';
 import { batchVerdicts, type Candidate, type Sig, type Verdict } from '../lib/vision/match';
-import { analyzeTable, straighten } from '../lib/vision/pipeline';
+import { analyzeTable, printSig, straighten } from '../lib/vision/pipeline';
+import { colorGradient, fitPrintAt, neighbourShape, type Grad } from '../lib/vision/fitAt';
+import { rankMatches } from '../lib/vision/match';
 import type { Raster } from '../lib/vision/raster';
 import type { Pt, Quad } from '../lib/vision/warp';
 import { patchPhotos, useStore } from '../store';
@@ -58,6 +60,9 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
   const [zoom, setZoom] = useState(false);
   const [walking, setWalking] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null);
+  const rasterRef = useRef<Raster | null>(null);
+  const gradRef = useRef<Grad | null>(null);
+  const [adding, setAdding] = useState(false);
 
   const [runId, setRunId] = useState(0);
   const [reopened, setReopened] = useState(false);
@@ -75,6 +80,8 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
         }
         const raster: Raster = await rasterFromFile(file ?? saved!, ANALYZE_EDGE);
         if (!live) return;
+        rasterRef.current = raster;
+        gradRef.current = null;
         const canvasImg = rasterToCanvas(raster);
         setBase(canvasImg);
         const prior = getPile(pile.id)?.results;
@@ -87,7 +94,7 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
         await new Promise((r) => setTimeout(r, 60)); // let "Looking…" paint first
         const same = sameMomentFn(byId);
         const analyzed = analyzeTable(raster, sigs);
-        const decisions = batchVerdicts(analyzed.map((f) => f.candidates), same);
+        const decisions = batchVerdicts(analyzed.map((f) => f.candidates), same, analyzed.map((f) => f.doubtful));
         const results = analyzed.map((f, i): Found => ({
           quad: f.quad, print: rasterToCanvas(f.image).toDataURL('image/jpeg', 0.85), candidates: f.candidates,
           verdict: decisions[i].verdict, chosen: decisions[i].id, confirmed: false,
@@ -185,7 +192,35 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
     const rect = c.getBoundingClientRect();
     const p = { x: ((e.clientX - rect.left) / rect.width) * c.width, y: ((e.clientY - rect.top) / rect.height) * c.height };
     const i = found.findIndex((f) => inQuad(p, f.quad));
-    if (i >= 0) setOpen(i);
+    if (i >= 0) { setOpen(i); return; }
+    addPrintAt(p);
+  }
+
+  /** The user tapped a print the detector missed: fit an outline there and match it. */
+  async function addPrintAt(p: Pt) {
+    const raster = rasterRef.current;
+    if (!raster || !found || adding) return;
+    const shape = neighbourShape(found.map((f) => f.quad), p);
+    if (!shape) return;
+    setAdding(true);
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      gradRef.current ??= colorGradient(raster);
+      const quad = fitPrintAt(gradRef.current, p, shape);
+      const { image, sig } = printSig(raster, quad);
+      const candidates = rankMatches(sig, sigs);
+      const next: Found = { quad, print: rasterToCanvas(image).toDataURL('image/jpeg', 0.85), candidates, verdict: 'unsure', chosen: null, confirmed: false };
+      setFound([...found, next]);
+      setOpen(found.length);
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  function removeOutline(i: number) {
+    if (!found) return;
+    setFound(found.filter((_, k) => k !== i));
+    setOpen(null);
   }
 
   function choose(i: number, id: string | null) {
@@ -233,6 +268,7 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
       <div class={`table-photo ${zoom ? 'zoomed' : ''}`}>
         {base ? <canvas ref={canvas} onClick={onCanvasClick} /> : <div class="table-placeholder">Opening photo…</div>}
         {base && !found && !error && <div class="table-busy"><span>Looking for prints…</span></div>}
+        {adding && <div class="table-busy"><span>Adding that print…</span></div>}
       </div>
       {error && <p class="card">{error}</p>}
 
@@ -253,7 +289,7 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
       {found && found.length > 0 && (
         <>
           <button class="btn primary block walk-start" onClick={() => setWalking(true)}>Go through in order ›</button>
-          <p class="muted small center">Swipe through the prints one by one, putting each one on top of the last. When you're done, flip the stack over so #1 is on top: that's <strong>pile {pile.label}</strong>. Or tap a print above to check its match.</p>
+          <p class="muted small center">Swipe through the prints one by one, putting each one on top of the last. When you're done, flip the stack over so #1 is on top: that's <strong>pile {pile.label}</strong>. Tap a print above to check its match, or tap a print with no outline to add it.</p>
           {flagged.length > 0 && (
             <section class="card flagged">
               <h3>Needs a look ({flagged.length})</h3>
@@ -301,7 +337,7 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
           onClose={() => setWalking(false)} onFix={(i) => setOpen(i)} />
       )}
       {open !== null && found && (
-        <PrintDetail f={found[open]} positions={positions} byId={byId} onChoose={(id) => choose(open, id)} onClose={() => setOpen(null)} />
+        <PrintDetail f={found[open]} positions={positions} byId={byId} onChoose={(id) => choose(open, id)} onClose={() => setOpen(null)} onRemove={() => removeOutline(open)} />
       )}
       {inputs}
     </div>
@@ -318,10 +354,10 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath();
 }
 
-export function PrintDetail({ f, positions, byId, onChoose, onClose }: {
+export function PrintDetail({ f, positions, byId, onChoose, onClose, onRemove }: {
   f: { print: string; candidates: Candidate[]; chosen: string | null };
   positions: Map<string, PrintInfo>; byId: Map<string, import('../lib/types').Photo>;
-  onChoose: (id: string | null) => void; onClose: () => void;
+  onChoose: (id: string | null) => void; onClose: () => void; onRemove?: () => void;
 }) {
   return (
     <Sheet title="Which photo is this?" onClose={onClose}>
@@ -342,6 +378,7 @@ export function PrintDetail({ f, positions, byId, onChoose, onClose }: {
         })}
       </div>
       <div class="row end">
+        {onRemove && <button class="btn ghost small" onClick={onRemove}>Not a print: remove outline</button>}
         <button class="btn ghost" onClick={() => onChoose(null)}>Not in my photos</button>
       </div>
     </Sheet>

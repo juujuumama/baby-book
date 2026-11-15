@@ -245,14 +245,16 @@ export function verdict(c: Candidate[], sameMoment: (a: string, b: string) => bo
  * prints both claim the same photo, the weaker claim gives way and is judged
  * on its remaining candidates.
  */
-export function batchVerdicts(lists: Candidate[][], sameMoment: (a: string, b: string) => boolean): { verdict: Verdict; id: string | null }[] {
+export function batchVerdicts(lists: Candidate[][], sameMoment: (a: string, b: string) => boolean, doubtful: boolean[] = []): { verdict: Verdict; id: string | null }[] {
   const order = lists.map((c, i) => ({ i, s: c[0]?.score ?? 0 })).sort((a, b) => b.s - a.s);
   const claimed = new Set<string>();
   const out: Verdict[] = new Array(lists.length).fill('none');
   const chosen: (string | null)[] = new Array(lists.length).fill(null);
   for (const { i } of order) {
     const rest = lists[i].filter((c) => !claimed.has(c.id));
-    const v = verdict(rest, sameMoment);
+    let v = verdict(rest, sameMoment);
+    // An outline we're unsure of (cut off by the photo's edge, odd shape) is never matched automatically.
+    if (doubtful[i] && v === 'match') v = 'unsure';
     out[i] = rest.length === lists[i].length ? v : v === 'match' ? 'match' : 'unsure';
     if (v === 'match') { claimed.add(rest[0].id); chosen[i] = rest[0].id; }
   }

@@ -30,16 +30,22 @@ export function printSig(src: Raster, quad: Quad): { image: Raster; sig: Sig } {
   return { image, sig: makeSig(image) };
 }
 
-/** True for bright patches with almost no detail, like glare on a shiny floor. */
+/** True for patches that can't be a photo print: glare on a shiny floor, or near-uniform areas like a dark cabinet. */
 export function featureless(r: Raster): boolean {
   const { w, h, data } = r;
-  let sum = 0, n = 0, bright = 0;
+  let sum = 0, n = 0, bright = 0, sq = 0;
   for (let y = 1; y < h - 1; y += 2) for (let x = 1; x < w - 1; x += 2) {
     const i = (y * w + x) * 4;
     const g = (k: number) => 0.299 * data[k] + 0.587 * data[k + 1] + 0.114 * data[k + 2];
     sum += Math.abs(g(i + 4) - g(i - 4)) + Math.abs(g(i + w * 4) - g(i - w * 4));
     bright += g(i);
+    sq += g(i) * g(i);
     n++;
+  }
+  if (n > 0) {
+    const mean = bright / n, sd = Math.sqrt(Math.max(0, sq / n - mean * mean));
+    // A near-uniform patch (a dark cabinet, a shadow) isn't a photo.
+    if (sd < 9) return true;
   }
   // Glare is bright and smooth; a print of clear sky is smooth but not glaring.
   return n > 0 && sum / n < 3 && bright / n > 170;
