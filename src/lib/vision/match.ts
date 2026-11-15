@@ -180,7 +180,7 @@ function views(sig: Sig, aspect: number, offsets: number[], scales: number[]): V
   return out;
 }
 
-export interface Candidate { id: string; score: number }
+export interface Candidate { id: string; score: number; /** Feature points that agree (when checked). */ inliers?: number }
 
 function score(p: Features, l: Features): number {
   const color = (maskedNcc(p.c[0], l.c[0], p.cm ?? null) + maskedNcc(p.c[1], l.c[1], p.cm ?? null) + maskedNcc(p.c[2], l.c[2], p.cm ?? null)) / 3;
@@ -245,14 +245,17 @@ export function verdict(c: Candidate[], sameMoment: (a: string, b: string) => bo
  * prints both claim the same photo, the weaker claim gives way and is judged
  * on its remaining candidates.
  */
-export function batchVerdicts(lists: Candidate[][], sameMoment: (a: string, b: string) => boolean, doubtful: boolean[] = []): { verdict: Verdict; id: string | null }[] {
+export function batchVerdicts(
+  lists: Candidate[][], sameMoment: (a: string, b: string) => boolean, doubtful: boolean[] = [],
+  judge: (c: Candidate[], same: (a: string, b: string) => boolean) => Verdict = verdict,
+): { verdict: Verdict; id: string | null }[] {
   const order = lists.map((c, i) => ({ i, s: c[0]?.score ?? 0 })).sort((a, b) => b.s - a.s);
   const claimed = new Set<string>();
   const out: Verdict[] = new Array(lists.length).fill('none');
   const chosen: (string | null)[] = new Array(lists.length).fill(null);
   for (const { i } of order) {
     const rest = lists[i].filter((c) => !claimed.has(c.id));
-    let v = verdict(rest, sameMoment);
+    let v = judge(rest, sameMoment);
     // An outline we're unsure of (cut off by the photo's edge, odd shape) is never matched automatically.
     if (doubtful[i] && v === 'match') v = 'unsure';
     out[i] = rest.length === lists[i].length ? v : v === 'match' ? 'match' : 'unsure';

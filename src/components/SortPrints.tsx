@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { parseYMD } from '../lib/dates';
 import { monthPositions } from '../lib/printLabels';
-import type { Sig } from '../lib/vision/match';
-import { loadSigs } from '../lib/vision/browser';
+import { loadMatchData } from '../lib/vision/browser';
+import { buildContext, type MatchContext } from '../lib/vision/matcher';
 import { useStore } from '../store';
 import { AddHelp } from './AddHelp';
 import { ImportButton } from './ImportButton';
@@ -22,7 +22,7 @@ type Mode = { kind: 'home' } | { kind: 'table'; file: File | null; pile: Pile } 
 export function SortPrints() {
   const { photos, settings } = useStore();
   const birth = parseYMD(settings.birthDate);
-  const [sigs, setSigs] = useState<Map<string, Sig> | null>(null);
+  const [ctx, setCtx] = useState<MatchContext | null>(null);
   const [prep, setPrep] = useState<{ done: number; total: number } | null>(null);
   const [mode, setMode] = useState<Mode>({ kind: 'home' });
   const takeInput = useRef<HTMLInputElement>(null);
@@ -32,8 +32,11 @@ export function SortPrints() {
   const photoKey = photos.map((p) => p.id).join(',');
   useEffect(() => {
     let live = true;
-    loadSigs(photos, (done, total) => live && setPrep(total ? { done, total } : null)).then((s) => {
-      if (live) { setSigs(s); setPrep(null); }
+    loadMatchData(photos, (done, total) => live && setPrep(total ? { done, total } : null)).then(({ sigs, orbs }) => {
+      if (!live) return;
+      setPrep({ done: 0, total: 0 });
+      // Let the screen update, then build the lookup (a second or two for big libraries).
+      setTimeout(() => { if (live) { setCtx(buildContext(sigs, orbs)); setPrep(null); } }, 30);
     });
     return () => { live = false; };
   }, [photoKey]);
@@ -41,7 +44,7 @@ export function SortPrints() {
   const positions = useMemo(() => monthPositions(photos, birth), [photos, settings.birthDate]);
   const piles = usePiles();
   const byId = useMemo(() => new Map(photos.map((p) => [p.id, p])), [photos]);
-  const usedPiles = piles.filter((p) => p.photoIds.length > 0);
+  const usedPiles = piles.filter((p) => p.photoIds.length > 0 || (p.results?.length ?? 0) > 0);
 
   const [batch, setBatch] = useState<{ done: number; total: number; prints: number; failed: number; finished: boolean } | null>(null);
 
@@ -55,13 +58,13 @@ export function SortPrints() {
 
   /** Several floor photos at once: one pile each, sorted one after another. */
   async function sortMany(files: File[]) {
-    if (!sigs) return;
+    if (!ctx) return;
     const state = { done: 0, total: files.length, prints: 0, failed: 0, finished: false };
     setBatch({ ...state });
     for (const f of files) {
       const pile = await startPile();
       try {
-        const { results } = await sortFloorPhoto(f, pile, sigs, byId, (ids) => patchPhotos(ids, { printed: true }));
+        const { results } = await sortFloorPhoto(f, pile, ctx, byId, (ids) => patchPhotos(ids, { printed: true }));
         state.prints += results.length;
         if (!results.length) await removePile(pile.id);
       } catch (err) {
@@ -91,15 +94,15 @@ export function SortPrints() {
     );
   }
 
-  if (mode.kind === 'table' && sigs) {
-    return <TableSort key={mode.pile.id} file={mode.file} pile={mode.pile} sigs={sigs} positions={positions} onDone={() => setMode({ kind: 'home' })}
+  if (mode.kind === 'table' && ctx) {
+    return <TableSort key={mode.pile.id} file={mode.file} pile={mode.pile} ctx={ctx} positions={positions} onDone={() => setMode({ kind: 'home' })}
       onAnother={() => takeInput.current?.click()} inputs={inputs()} />;
   }
   if (mode.kind === 'merge') {
     return <MergeWalk piles={usedPiles} positions={positions} byId={byId} onClose={() => setMode({ kind: 'home' })} />;
   }
-  if (mode.kind === 'live' && sigs) {
-    return <LiveSort sigs={sigs} positions={positions} onClose={() => setMode({ kind: 'home' })} />;
+  if (mode.kind === 'live' && ctx) {
+    return <LiveSort ctx={ctx} positions={positions} onClose={() => setMode({ kind: 'home' })} />;
   }
 
   function inputs() {
@@ -111,7 +114,7 @@ export function SortPrints() {
     );
   }
 
-  const ready = !!sigs && !prep;
+  const ready = !!ctx && !prep;
   const dated = photos.filter((p) => p.taken).map((p) => p.taken!).sort();
   const span = dated.length ? `${fmtMonth(dated[0])} – ${fmtMonth(dated[dated.length - 1])}` : '';
   return (
@@ -129,7 +132,7 @@ export function SortPrints() {
         {prep && (
           <>
             <div class="progress"><div class="progress-fill" style={{ width: `${Math.round((prep.done / Math.max(1, prep.total)) * 100)}%` }} /></div>
-            <p class="muted small center">Getting your photos ready for matching… {prep.done} of {prep.total} (only needed once)</p>
+            <p class="muted small center">{prep.total ? `Getting your photos ready for matching… ${prep.done} of ${prep.total} (only needed once)` : 'Getting ready…'}</p>
           </>
         )}
       </div>

@@ -3,10 +3,10 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { saveFiles } from '../lib/backup';
 import { byTakenIds, fullLabel, shortLabel, type PrintInfo } from '../lib/printLabels';
 import { rasterFromFile, rasterToCanvas } from '../lib/vision/browser';
-import { type Candidate, type Sig, type Verdict } from '../lib/vision/match';
+import { type Candidate, type Verdict } from '../lib/vision/match';
 import { printSig, straighten } from '../lib/vision/pipeline';
 import { colorGradient, fitPrintAt, neighbourShape, type Grad } from '../lib/vision/fitAt';
-import { rankMatches } from '../lib/vision/match';
+import { matchPrint, type MatchContext } from '../lib/vision/matcher';
 import type { Raster } from '../lib/vision/raster';
 import type { Pt, Quad } from '../lib/vision/warp';
 import { patchPhotos, useStore } from '../store';
@@ -46,9 +46,9 @@ function quadSize(q: Quad) {
   return Math.sqrt(Math.abs(((q[2].x - q[0].x) * (q[3].y - q[1].y) - (q[3].x - q[1].x) * (q[2].y - q[0].y)) / 2));
 }
 
-export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inputs }: {
+export function TableSort({ file, pile, ctx, positions, onDone, onAnother, inputs }: {
   /** A new floor photo to analyse, or null to reopen a saved pile. */
-  file: File | null; pile: Pile; sigs: Map<string, Sig>; positions: Map<string, PrintInfo>;
+  file: File | null; pile: Pile; ctx: MatchContext; positions: Map<string, PrintInfo>;
   onDone: () => void; onAnother: () => void; inputs: ComponentChildren;
 }) {
   const { photos } = useStore();
@@ -91,7 +91,7 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
           setFound(prior.map((r) => ({ ...r, print: rasterToCanvas(straighten(raster, r.quad)).toDataURL('image/jpeg', 0.85) })));
           return;
         }
-        const { results } = await sortFloorPhoto(file ?? saved!, pile, sigs, byId, (ids) => patchPhotos(ids, { printed: true }));
+        const { results } = await sortFloorPhoto(file ?? saved!, pile, ctx, byId, (ids) => patchPhotos(ids, { printed: true }));
         if (!live) return;
         setFound(results.map((r) => ({ ...r, print: rasterToCanvas(straighten(raster, r.quad)).toDataURL('image/jpeg', 0.85) })));
       } catch (err) {
@@ -193,8 +193,8 @@ export function TableSort({ file, pile, sigs, positions, onDone, onAnother, inpu
     try {
       gradRef.current ??= colorGradient(raster);
       const quad = fitPrintAt(gradRef.current, p, shape);
-      const { image, sig } = printSig(raster, quad);
-      const candidates = rankMatches(sig, sigs);
+      const { image } = printSig(raster, quad);
+      const candidates = matchPrint(image, ctx);
       const next: Found = { quad, print: rasterToCanvas(image).toDataURL('image/jpeg', 0.85), candidates, verdict: 'unsure', chosen: null, confirmed: false };
       setFound([...found, next]);
       setOpen(found.length);

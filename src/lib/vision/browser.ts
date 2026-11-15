@@ -1,5 +1,6 @@
 // Browser glue: get pixels out of images and canvases for the vision code.
-import { getAllSigs, getBlob, putSig } from '../db';
+import { getAllOrbs, getAllSigs, getBlob, putOrb, putSig } from '../db';
+import { computeOrb, packOrb, unpackOrb, type Orb } from './orb';
 import { decodeImage, closeDrawable } from '../image';
 import type { Photo } from '../types';
 import { makeSig, type Sig } from './match';
@@ -54,14 +55,17 @@ export function rasterToCanvas(r: Raster): HTMLCanvasElement {
 }
 
 /**
- * Load every fingerprint, building any that are missing (photos added before
- * matching existed, or restored from a backup) from their thumbnails.
+ * Load every photo's matching data (a small whole-image fingerprint and its
+ * feature points), building whatever is missing from the thumbnails. Only
+ * slow the first time; everything is kept on the device afterwards.
  */
-export async function loadSigs(photos: Photo[], onProgress?: (done: number, total: number) => void): Promise<Map<string, Sig>> {
-  const sigs = await getAllSigs();
+export async function loadMatchData(photos: Photo[], onProgress?: (done: number, total: number) => void): Promise<{ sigs: Map<string, Sig>; orbs: Map<string, Orb> }> {
+  const [sigs, packed] = await Promise.all([getAllSigs(), getAllOrbs()]);
   const ids = new Set(photos.map((p) => p.id));
   for (const id of [...sigs.keys()]) if (!ids.has(id)) sigs.delete(id);
-  const missing = photos.filter((p) => !sigs.has(p.id));
+  const orbs = new Map<string, Orb>();
+  for (const [id, p] of packed) if (ids.has(id)) orbs.set(id, unpackOrb(p));
+  const missing = photos.filter((p) => !sigs.has(p.id) || !orbs.has(p.id));
   let done = 0;
   onProgress?.(done, missing.length);
   for (const p of missing) {
@@ -69,16 +73,16 @@ export async function loadSigs(photos: Photo[], onProgress?: (done: number, tota
       const blob = await getBlob(p.id, 'thumb');
       if (blob) {
         const img = await decodeImage(blob);
-        const sig = sigFromSource(img as Source);
+        const raster = rasterFrom(img as Source, 480);
         closeDrawable(img);
-        await putSig(p.id, sig);
-        sigs.set(p.id, sig);
+        if (!sigs.has(p.id)) { const sig = makeSig(raster); await putSig(p.id, sig); sigs.set(p.id, sig); }
+        if (!orbs.has(p.id)) { const orb = computeOrb(raster, 250); await putOrb(p.id, packOrb(orb)); orbs.set(p.id, orb); }
       }
     } catch (err) {
-      console.warn('Could not fingerprint', p.id, err);
+      console.warn('Could not prepare', p.id, err);
     }
     onProgress?.(++done, missing.length);
-    if (done % 20 === 0) await new Promise((r) => setTimeout(r, 0));
+    if (done % 10 === 0) await new Promise((r) => setTimeout(r, 0));
   }
-  return sigs;
+  return { sigs, orbs };
 }

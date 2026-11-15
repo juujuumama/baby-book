@@ -3,7 +3,8 @@ import { ageShort, formatShort } from '../lib/dates';
 import { byTakenIds, sameMomentFn, type PrintInfo } from '../lib/printLabels';
 import { rasterFrom, rasterToCanvas } from '../lib/vision/browser';
 import { detectPrints } from '../lib/vision/detect';
-import { rankMatches, verdict, type Candidate, type Sig } from '../lib/vision/match';
+import { type Candidate } from '../lib/vision/match';
+import { matchPrint, orbVerdict, type MatchContext } from '../lib/vision/matcher';
 import { printSig } from '../lib/vision/pipeline';
 import type { Quad } from '../lib/vision/warp';
 import { patchPhotos, useStore } from '../store';
@@ -23,7 +24,7 @@ function guideQuad(w: number, h: number, landscape: boolean): Quad {
   return [{ x: x0, y: y0 }, { x: x0 + gw, y: y0 }, { x: x0 + gw, y: y0 + gh }, { x: x0, y: y0 + gh }];
 }
 
-export function LiveSort({ sigs, positions, onClose }: { sigs: Map<string, Sig>; positions: Map<string, PrintInfo>; onClose: () => void }) {
+export function LiveSort({ ctx, positions, onClose }: { ctx: MatchContext; positions: Map<string, PrintInfo>; onClose: () => void }) {
   const { photos } = useStore();
   const byId = useMemo(() => new Map(photos.map((p) => [p.id, p])), [photos]);
   const video = useRef<HTMLVideoElement>(null);
@@ -75,9 +76,9 @@ export function LiveSort({ sigs, positions, onClose }: { sigs: Map<string, Sig>;
       .sort((a, b) => b.area - a.area);
     const q = dets[0]?.quad ?? guide;
     setQuad({ q, w: frame.w, h: frame.h, found: !!dets[0] });
-    const { image, sig } = printSig(frame, q);
-    const candidates = rankMatches(sig, sigs, 5);
-    const vd = verdict(candidates, same);
+    const { image } = printSig(frame, q);
+    const candidates = matchPrint(image, ctx, 5);
+    const vd = orbVerdict(candidates, same);
     const top = candidates[0]?.id ?? null;
     if (vd === 'match' && top) {
       // Show a match once two frames in a row agree.
